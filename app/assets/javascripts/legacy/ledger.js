@@ -16,13 +16,28 @@ function amountMatches(amount, query) {
   return Math.abs(Math.abs(amount) - Math.abs(target)) < 0.005;
 }
 
+function showLedgerMessage(html) {
+  document.getElementById("ledger-body").innerHTML = `<tr><td colspan="6">${html}</td></tr>`;
+}
+
 async function load() {
-  const [ledgerRes, matchesRes] = await Promise.all([
-    fetch(`${API_BASE}/api/ledger`),
-    fetch(`${API_BASE}/api/matches`),
-  ]);
-  const data = await ledgerRes.json();
-  const matchData = await matchesRes.json();
+  showLedgerMessage(`<div class="empty-msg loading-msg"><span class="loading-spinner"></span>Loading transactions…</div>`);
+  let data, matchData;
+  try {
+    const [ledgerRes, matchesRes] = await Promise.all([
+      fetch(`${API_BASE}/api/ledger`),
+      fetch(`${API_BASE}/api/matches`),
+    ]);
+    if (!ledgerRes.ok || !matchesRes.ok) throw new Error("bad response");
+    [data, matchData] = await Promise.all([ledgerRes.json(), matchesRes.json()]);
+  } catch (e) {
+    showLedgerMessage(`<div class="empty-msg">Could not load transactions. <a href="#" class="nav-link load-retry">Retry</a></div>`);
+    document.querySelector(".load-retry").addEventListener("click", (ev) => {
+      ev.preventDefault();
+      load();
+    });
+    return;
+  }
 
   matchedIds = new Set();
   discrepancyIds = new Set();

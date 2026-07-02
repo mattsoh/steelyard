@@ -17,8 +17,13 @@ module Hcb
       get("/api/v4/organizations/#{id}", **(expand.any? ? { expand: expand } : {}))
     end
 
-    def transactions(organization_id, after: nil, limit: 100)
-      get("/api/v4/organizations/#{organization_id}/transactions", after: after, limit: limit)
+    def transactions(organization_id, after: nil, limit: 100, filters: {})
+      get(
+        "/api/v4/organizations/#{organization_id}/transactions",
+        after: after,
+        limit: limit,
+        filters: filters
+      )
     end
 
     def transaction(id) = get("/api/v4/transactions/#{id}")

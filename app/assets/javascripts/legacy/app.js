@@ -6,7 +6,6 @@ let byId = new Map();
 
 let selectedIncomingIds = [];
 let selectedOutgoingIds = [];
-let pendingAdjustments = [];
 
 let currentIncomingOrder = [];
 let currentOutgoingOrder = [];
@@ -25,13 +24,33 @@ function amountMatches(amount, query) {
   return Math.abs(Math.abs(amount) - Math.abs(target)) < 0.005;
 }
 
+const LOADING_HTML = `<div class="empty-msg loading-msg"><span class="loading-spinner"></span>Loading transactions…</div>`;
+
+function showListsMessage(html) {
+  document.getElementById("list-incoming").innerHTML = html;
+  document.getElementById("list-outgoing").innerHTML = html;
+}
+
 async function loadAll() {
-  const [txRes, matchRes] = await Promise.all([
-    fetch(`${API_BASE}/api/transactions`),
-    fetch(`${API_BASE}/api/matches`),
-  ]);
-  const txData = await txRes.json();
-  const matchData = await matchRes.json();
+  showListsMessage(LOADING_HTML);
+  let txData, matchData;
+  try {
+    const [txRes, matchRes] = await Promise.all([
+      fetch(`${API_BASE}/api/transactions`),
+      fetch(`${API_BASE}/api/matches`),
+    ]);
+    if (!txRes.ok || !matchRes.ok) throw new Error("bad response");
+    [txData, matchData] = await Promise.all([txRes.json(), matchRes.json()]);
+  } catch (e) {
+    showListsMessage(`<div class="empty-msg">Could not load transactions. <a href="#" class="nav-link load-retry">Retry</a></div>`);
+    document.querySelectorAll(".load-retry").forEach((el) => {
+      el.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        loadAll();
+      });
+    });
+    return;
+  }
   allTransactions = txData.transactions;
   byId = new Map(allTransactions.map((t) => [t.id, t]));
   matches = matchData.matches;
@@ -211,18 +230,11 @@ function clearOutgoingSelection() {
   render();
 }
 
-function adjustmentRowHtml(a, idx) {
-  return `<div class="tray-incoming-item" data-adj-idx="${idx}">
-    <span>Adjustment — ${escapeHtml(a.memo)} — <strong>${fmt(a.amount)}</strong></span>
-    <span class="remove" data-remove-adj="${idx}">×</span>
-  </div>`;
-}
-
 function renderTray() {
   const empty = document.getElementById("tray-empty");
   const body = document.getElementById("tray-body");
 
-  if (selectedIncomingIds.length === 0 && selectedOutgoingIds.length === 0 && pendingAdjustments.length === 0) {
+  if (selectedIncomingIds.length === 0 && selectedOutgoingIds.length === 0) {
     empty.classList.remove("hidden");
     body.classList.add("hidden");
     return;
@@ -276,24 +288,11 @@ function renderTray() {
     document.getElementById("clear-outgoing-all").addEventListener("click", clearOutgoingSelection);
   }
 
-  if (pendingAdjustments.length) {
-    const adjHtml = pendingAdjustments.map((a, idx) => adjustmentRowHtml(a, idx)).join("");
-    inList.innerHTML += adjHtml;
-    inList.querySelectorAll("[data-remove-adj]").forEach((el) => {
-      el.addEventListener("click", (e) => {
-        e.stopPropagation();
-        pendingAdjustments.splice(Number(el.dataset.removeAdj), 1);
-        render();
-      });
-    });
-  }
-
   wireDetailButtons(document.getElementById("tray-body"));
 
   const incomingAmount = selectedIncomingIds.reduce((s, id) => s + byId.get(id).amount, 0);
   const outSum = selectedOutgoingIds.reduce((s, id) => s + byId.get(id).amount, 0);
-  const adjustmentsSum = pendingAdjustments.reduce((s, a) => s + a.amount, 0);
-  const diff = round2(incomingAmount + outSum + adjustmentsSum);
+  const diff = round2(incomingAmount + outSum);
 
   document.getElementById("tray-in-amt").textContent = fmt(incomingAmount);
   document.getElementById("tray-out-amt").textContent = fmt(outSum);
@@ -328,7 +327,6 @@ async function confirmMatch() {
     body: JSON.stringify({
       incoming_ids: selectedIncomingIds,
       outgoing_ids: selectedOutgoingIds,
-      adjustments: pendingAdjustments.map((a) => ({ amount: a.amount, memo: a.memo })),
     }),
   });
   if (!res.ok) {
@@ -337,7 +335,6 @@ async function confirmMatch() {
       alert(err.error || "Someone else just matched one of these transactions. Refreshing the lists.");
       selectedIncomingIds = [];
       selectedOutgoingIds = [];
-      pendingAdjustments = [];
       lastIncomingClickId = null;
       lastOutgoingClickId = null;
       await loadAll();
@@ -348,7 +345,6 @@ async function confirmMatch() {
   }
   selectedIncomingIds = [];
   selectedOutgoingIds = [];
-  pendingAdjustments = [];
   lastIncomingClickId = null;
   lastOutgoingClickId = null;
   resetSearchFields();
@@ -358,7 +354,6 @@ async function confirmMatch() {
 function cancelMatch() {
   selectedIncomingIds = [];
   selectedOutgoingIds = [];
-  pendingAdjustments = [];
   lastIncomingClickId = null;
   lastOutgoingClickId = null;
   render();
@@ -434,52 +429,5 @@ document.getElementById("search-outgoing").addEventListener("input", renderLists
 document.getElementById("search-outgoing-amount").addEventListener("input", renderLists);
 document.getElementById("sort-incoming").addEventListener("change", renderLists);
 document.getElementById("sort-outgoing").addEventListener("change", renderLists);
-
-let addTxDirection = null;
-
-function openAddTxModal(direction) {
-  addTxDirection = direction;
-  document.getElementById("add-tx-modal-title").textContent =
-    direction === "in" ? "Add adjustment (increases match total)" : "Add adjustment (decreases match total)";
-  document.getElementById("add-tx-form").reset();
-  document.getElementById("add-tx-date").value = new Date().toISOString().slice(0, 10);
-  document.getElementById("add-tx-modal-overlay").classList.remove("hidden");
-  document.getElementById("add-tx-memo").focus();
-}
-
-function closeAddTxModal() {
-  document.getElementById("add-tx-modal-overlay").classList.add("hidden");
-}
-
-function submitAddTx(e) {
-  e.preventDefault();
-  const memo = document.getElementById("add-tx-memo").value.trim();
-  const amount = parseFloat(document.getElementById("add-tx-amount").value);
-
-  if (!memo || !(amount > 0)) return;
-
-  // Adjustments are local-only until the match is confirmed -- there's no
-  // HCB endpoint to write a correction transaction to (the API is
-  // read-only), so this is staged in the tray and sent as part of the
-  // POST /api/matches payload instead of its own request.
-  pendingAdjustments.push({
-    memo,
-    amount: addTxDirection === "in" ? amount : -amount,
-  });
-  closeAddTxModal();
-  renderTray();
-}
-
-document.getElementById("btn-add-incoming").addEventListener("click", () => openAddTxModal("in"));
-document.getElementById("btn-add-outgoing").addEventListener("click", () => openAddTxModal("out"));
-document.getElementById("add-tx-form").addEventListener("submit", submitAddTx);
-document.getElementById("add-tx-cancel").addEventListener("click", closeAddTxModal);
-document.getElementById("add-tx-modal-close").addEventListener("click", closeAddTxModal);
-document.getElementById("add-tx-modal-overlay").addEventListener("click", (e) => {
-  if (e.target.id === "add-tx-modal-overlay") closeAddTxModal();
-});
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") closeAddTxModal();
-});
 
 loadAll();

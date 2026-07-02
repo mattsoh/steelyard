@@ -8,10 +8,10 @@ class Matches::CreateTest < ActiveSupport::TestCase
     @by_id = { @incoming.id => @incoming, @outgoing.id => @outgoing }
   end
 
-  def call(incoming_ids: [], outgoing_ids: [], note: "", adjustments: [])
+  def call(incoming_ids: [], outgoing_ids: [], note: "")
     Matches::Create.new(
       organization_id: "org_1", user: @user,
-      incoming_ids: incoming_ids, outgoing_ids: outgoing_ids, note: note, adjustments: adjustments,
+      incoming_ids: incoming_ids, outgoing_ids: outgoing_ids, note: note,
       transactions_by_id: @by_id
     ).call
   end
@@ -40,13 +40,6 @@ class Matches::CreateTest < ActiveSupport::TestCase
     result = call(incoming_ids: [ "txn_out" ], outgoing_ids: [])
     assert_not result.success?
     assert_match(/not a valid incoming transaction/, result.error)
-  end
-
-  test "folds adjustments into the discrepancy" do
-    result = call(incoming_ids: [ "txn_in" ], outgoing_ids: [ "txn_out" ], adjustments: [ { amount: -50.0, memo: "fee" } ])
-    assert result.success?
-    assert_equal(-5_000, result.match.discrepancy_cents)
-    assert_equal 1, result.match.adjustments.count
   end
 
   test "returns 409 conflict when the transaction was already claimed" do

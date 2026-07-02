@@ -11,7 +11,6 @@ class Api::MatchesController < ApplicationController
   def create
     incoming_ids = Array(params[:incoming_ids]).map(&:to_s)
     outgoing_ids = Array(params[:outgoing_ids]).map(&:to_s)
-    adjustments = Array(params[:adjustments]).map { |a| { amount: a[:amount].to_f, memo: a[:memo].to_s } }
 
     by_id = Hcb::OrganizationTransactions.new(hcb_client, organization_id).all
       .map { |t| Hcb::TransactionPresenter.new(t) }
@@ -23,7 +22,6 @@ class Api::MatchesController < ApplicationController
       incoming_ids: incoming_ids,
       outgoing_ids: outgoing_ids,
       note: params[:note].to_s,
-      adjustments: adjustments,
       transactions_by_id: by_id
     ).call
 

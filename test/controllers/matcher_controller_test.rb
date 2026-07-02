@@ -16,6 +16,7 @@ class MatcherControllerTest < ActionController::TestCase
     assert_includes response.body, 'id="list-incoming"'
     assert_includes response.body, 'id="list-outgoing"'
     assert_includes response.body, 'id="tray-body"'
+    assert_includes response.body, "Loading transactions"
   end
 
   test "a non-member is forbidden" do

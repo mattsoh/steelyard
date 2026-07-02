@@ -10,6 +10,10 @@
     <span class="value"><%= link_to "View full ledger →", organization_ledger_path(organization_id: organization_id), class: "nav-link" %></span>
   </div>
   <div class="stat">
+    <span class="label">&nbsp;</span>
+    <span class="value"><%= link_to "Change organization", organizations_path, class: "nav-link" %></span>
+  </div>
+  <div class="stat">
     <span class="label">Unmatched incoming</span>
     <span class="value" id="stat-in-count">—</span>
   </div>
@@ -43,7 +47,6 @@
             <option value="amount-desc">Amount ↓</option>
             <option value="amount-asc">Amount ↑</option>
           </select>
-          <button type="button" class="secondary add-btn" id="btn-add-incoming">+ Add transaction</button>
         </div>
       </div>
       <div class="search-group">
@@ -92,7 +95,6 @@
             <option value="amount-desc">Amount ↓</option>
             <option value="amount-asc">Amount ↑</option>
           </select>
-          <button type="button" class="secondary add-btn" id="btn-add-outgoing">+ Add transaction</button>
         </div>
       </div>
       <div class="search-group">
@@ -133,35 +135,6 @@
       <button type="button" id="detail-modal-close" class="modal-close">×</button>
     </div>
     <div class="modal-body" id="detail-modal-body"></div>
-  </div>
-</div>
-
-<div id="add-tx-modal-overlay" class="modal-overlay hidden">
-  <div class="modal-box">
-    <div class="modal-header">
-      <h3 id="add-tx-modal-title">Add transaction</h3>
-      <button type="button" id="add-tx-modal-close" class="modal-close">×</button>
-    </div>
-    <div class="modal-body">
-      <form id="add-tx-form">
-        <div class="modal-field">
-          <label class="field-label" for="add-tx-date">Date</label>
-          <input type="date" id="add-tx-date" required>
-        </div>
-        <div class="modal-field">
-          <label class="field-label" for="add-tx-memo">Memo</label>
-          <input type="text" id="add-tx-memo" placeholder="e.g. Discrepancy correction" required>
-        </div>
-        <div class="modal-field">
-          <label class="field-label" for="add-tx-amount">Amount</label>
-          <input type="number" id="add-tx-amount" step="0.01" min="0.01" placeholder="0.00" required>
-        </div>
-        <div class="tray-actions">
-          <button type="submit">Add transaction</button>
-          <button type="button" class="secondary" id="add-tx-cancel">Cancel</button>
-        </div>
-      </form>
-    </div>
   </div>
 </div>
 

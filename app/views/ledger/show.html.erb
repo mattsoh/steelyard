@@ -6,6 +6,10 @@
     <span class="value"><%= link_to "← Back to matcher", organization_matcher_path(organization_id: organization_id), class: "nav-link" %></span>
   </div>
   <div class="stat">
+    <span class="label">&nbsp;</span>
+    <span class="value"><%= link_to "Change organization", organizations_path, class: "nav-link" %></span>
+  </div>
+  <div class="stat">
     <span class="label">Zero balance on</span>
     <span class="value" id="stat-zero-date">—</span>
   </div>

@@ -12,12 +12,16 @@ module Hcb
     def id = @raw["id"]
     def date = @raw["date"]
     def memo = @raw["memo"]
-    def amount = ((@raw["amount_cents"] || 0) / 100.0).round(2)
+    def amount_cents = @raw["amount_cents"] || 0
+    def amount = (amount_cents / 100.0).round(2)
     def direction = amount.negative? ? "out" : "in"
+    def declined? = !!@raw["declined"]
     def tags = Array(@raw["tags"]).join(", ")
     def comments = ""
     def user_name = ""
-    def category_label = @raw["code"].to_s
+    def category_label
+      @raw["code"].to_s.tr("_-", "  ").squish.capitalize
+    end
 
     def as_json(*)
       {

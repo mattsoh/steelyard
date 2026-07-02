@@ -2,13 +2,12 @@ module Matches
   class Create
     Result = Struct.new(:success?, :match, :error, :status, keyword_init: true)
 
-    def initialize(organization_id:, user:, incoming_ids:, outgoing_ids:, note:, adjustments:, transactions_by_id:)
+    def initialize(organization_id:, user:, incoming_ids:, outgoing_ids:, note:, transactions_by_id:)
       @organization_id = organization_id
       @user = user
       @incoming_ids = incoming_ids
       @outgoing_ids = outgoing_ids
       @note = note
-      @adjustments = adjustments
       @transactions_by_id = transactions_by_id
     end
 
@@ -26,8 +25,7 @@ module Matches
 
       incoming_sum = @incoming_ids.sum { |id| @transactions_by_id[id].amount }
       outgoing_sum = @outgoing_ids.sum { |id| @transactions_by_id[id].amount }
-      adjustments_sum = @adjustments.sum { |a| a[:amount] }
-      discrepancy = (incoming_sum + outgoing_sum + adjustments_sum).round(2)
+  discrepancy = (incoming_sum + outgoing_sum).round(2)
 
       match = nil
       ActiveRecord::Base.transaction(requires_new: true) do
@@ -42,9 +40,6 @@ module Matches
         end
         @outgoing_ids.each do |id|
           match.match_transactions.create!(hcb_organization_id: @organization_id, hcb_transaction_id: id, direction: :outgoing)
-        end
-        @adjustments.each do |a|
-          match.adjustments.create!(amount_cents: (a[:amount] * 100).round, memo: a[:memo], created_by: @user)
         end
       end
 

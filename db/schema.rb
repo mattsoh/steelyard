@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.0].define(version: 2026_07_02_201146) do
+ActiveRecord::Schema[8.0].define(version: 2026_07_02_215608) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -51,6 +51,16 @@ ActiveRecord::Schema[8.0].define(version: 2026_07_02_201146) do
     t.index ["legacy_id"], name: "index_matches_on_legacy_id", unique: true
   end
 
+  create_table "organization_settings", force: :cascade do |t|
+    t.string "hcb_organization_id", null: false
+    t.string "zero_balance_transaction_id"
+    t.string "zero_balance_date"
+    t.bigint "updated_by_user_id", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["hcb_organization_id"], name: "index_organization_settings_on_hcb_organization_id", unique: true
+  end
+
   create_table "users", force: :cascade do |t|
     t.string "hcb_user_id", null: false
     t.string "email"
@@ -68,4 +78,5 @@ ActiveRecord::Schema[8.0].define(version: 2026_07_02_201146) do
   add_foreign_key "match_transactions", "matches"
   add_foreign_key "matches", "users", column: "created_by_user_id"
   add_foreign_key "matches", "users", column: "undone_by_user_id"
+  add_foreign_key "organization_settings", "users", column: "updated_by_user_id"
 end

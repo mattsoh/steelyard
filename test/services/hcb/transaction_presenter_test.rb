@@ -7,7 +7,7 @@ class Hcb::TransactionPresenterTest < ActiveSupport::TestCase
     assert_equal "in", presenter.direction
     assert_equal 123.45, presenter.amount
     assert_equal "complete", presenter.tags
-    assert_equal "donation", presenter.category_label
+    assert_equal "Donation", presenter.category_label
   end
 
   test "presents a debit as outgoing with a negative dollar amount" do
