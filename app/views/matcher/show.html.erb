@@ -2,8 +2,8 @@
 
 <header id="stats">
   <div class="stat">
-    <span class="label">Zero balance on</span>
-    <span class="value" id="stat-zero-date">—</span>
+    <span class="label">Cutoff period</span>
+    <span class="value"><select class="cutoff-select" id="cutoff-select" aria-label="Choose cutoff period"></select></span>
   </div>
   <div class="stat">
     <span class="label">&nbsp;</span>
@@ -135,6 +135,24 @@
       <button type="button" id="detail-modal-close" class="modal-close">×</button>
     </div>
     <div class="modal-body" id="detail-modal-body"></div>
+  </div>
+</div>
+
+<div id="cutoff-modal-overlay" class="modal-overlay hidden">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h3>⚠ Matches span across cutoff</h3>
+      <button type="button" id="cutoff-modal-close" class="modal-close">×</button>
+    </div>
+    <div class="modal-body">
+      <p>Moving the cutoff here would split <strong id="cutoff-modal-count">0</strong> confirmed match(es) 
+       These matches will be undone.</p>
+      <div class="cutoff-conflict-list" id="cutoff-modal-list"></div>
+      <div class="tray-actions">
+        <button type="button" id="cutoff-modal-confirm" class="danger">Change cutoff &amp; remove matches</button>
+        <button type="button" id="cutoff-modal-cancel" class="secondary">Cancel</button>
+      </div>
+    </div>
   </div>
 </div>
 

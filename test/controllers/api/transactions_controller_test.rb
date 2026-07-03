@@ -26,4 +26,22 @@ class Api::TransactionsControllerTest < ActionController::TestCase
     assert_includes ids, "txn_recent"
     assert_includes ids, "txn_old"
   end
+
+  test "zero_balance_options always offers the beginning of history" do
+    fake_client = FakeHcbClient.new(transactions: [
+      { "id" => "txn_1", "date" => "2026-01-01", "memo" => "Donation", "amount_cents" => 5_000 }
+    ])
+
+    Hcb::Client.stub :new, fake_client do
+      Hcb::OrganizationMembers.stub :role_for, "reader" do
+        get :index, params: { organization_id: "org_1" }
+      end
+    end
+
+    assert_response :success
+    options = JSON.parse(response.body)["zero_balance_options"]
+    beginning = options.find { |o| o["transaction_id"] == OrganizationLedger::BEGINNING_ID }
+    assert beginning
+    assert_equal true, beginning["beginning"]
+  end
 end

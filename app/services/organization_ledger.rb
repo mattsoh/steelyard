@@ -1,5 +1,12 @@
 class OrganizationLedger
-  ZeroOption = Struct.new(:date, :transaction_id, :index, keyword_init: true)
+  # Sentinel transaction_id for the synthetic "before anything happened"
+  # cutoff option -- the balance is zero there too, it just isn't attached to
+  # a real transaction. Distinguishable from real HCB ids (e.g. "txn_...").
+  BEGINNING_ID = "__beginning__".freeze
+
+  ZeroOption = Struct.new(:date, :transaction_id, :index, keyword_init: true) do
+    def beginning? = index == -1
+  end
 
   def initialize(client, organization_id)
     @client = client
@@ -24,16 +31,18 @@ class OrganizationLedger
   end
 
   # Newest-first. When the balance crossed zero more than once on the same
-  # day, only the last crossing that day is offered.
+  # day, only the last crossing that day is offered. The very start of the
+  # transaction history -- before anything happened, balance necessarily zero
+  # -- is always offered too, as the oldest (last) option.
   def zero_options
     @zero_options ||= begin
       by_date = {}
       running_balance_cents.each_with_index do |balance, i|
         by_date[transactions[i].date] = i if balance.zero?
       end
-      by_date
-        .map { |date, i| ZeroOption.new(date: date, transaction_id: transactions[i].id, index: i) }
-        .sort_by(&:index).reverse
+      crossings = by_date.map { |date, i| ZeroOption.new(date: date, transaction_id: transactions[i].id, index: i) }
+      beginning = ZeroOption.new(date: transactions.first&.date, transaction_id: BEGINNING_ID, index: -1)
+      (crossings + [ beginning ]).sort_by(&:index).reverse
     end
   end
 
@@ -41,7 +50,8 @@ class OrganizationLedger
     return @effective_cutoff if defined?(@effective_cutoff)
 
     setting = OrganizationSetting.find_by(hcb_organization_id: @organization_id)
-    chosen = setting && zero_options.find { |o| o.transaction_id == setting.zero_balance_transaction_id }
+    chosen = setting&.zero_balance_transaction_id.presence &&
+      zero_options.find { |o| o.transaction_id == setting.zero_balance_transaction_id }
     @effective_cutoff = chosen || zero_options.first
   end
 

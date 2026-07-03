@@ -12,7 +12,7 @@ class Api::TransactionsController < ApplicationController
     render json: {
       zero_balance_date: ledger.effective_cutoff&.date,
       zero_balance_selected_id: ledger.effective_cutoff&.transaction_id,
-      zero_balance_options: ledger.zero_options.map { |o| { date: o.date, transaction_id: o.transaction_id } },
+      zero_balance_options: ledger.zero_options.map { |o| { date: o.date, transaction_id: o.transaction_id, beginning: o.beginning? } },
       transactions: transactions.map(&:as_json)
     }
   end

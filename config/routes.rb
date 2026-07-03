@@ -21,6 +21,7 @@ Rails.application.routes.draw do
       post   "matches",      to: "matches#create"
       delete "matches/:id",  to: "matches#destroy"
       get    "ledger",       to: "ledger#index"
+      patch  "cutoff",       to: "cutoffs#update"
     end
   end
 end

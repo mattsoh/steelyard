@@ -22,4 +22,12 @@ module OrganizationScoped
 
     render json: { error: "Only members or managers can do that." }, status: :forbidden
   end
+
+  # For actions consequential enough to affect other users' work at once
+  # (e.g. moving the cutoff can cascade-undo matches other people created).
+  def require_manager_role!
+    return if @current_role == "manager"
+
+    render json: { error: "Only managers can do that." }, status: :forbidden
+  end
 end

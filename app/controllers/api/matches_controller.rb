@@ -4,8 +4,9 @@ class Api::MatchesController < ApplicationController
   before_action :require_matcher_role!, only: [ :create, :destroy ]
 
   def index
+    ledger = OrganizationLedger.new(hcb_client, organization_id)
     matches = Match.active.for_organization(organization_id).includes(:created_by).order(:id)
-    render json: { matches: matches.map { |m| serialize(m) } }
+    render json: { matches: matches.map { |m| serialize(m, ledger) } }
   end
 
   def create
@@ -45,15 +46,18 @@ class Api::MatchesController < ApplicationController
 
   private
 
-  def serialize(m)
+  def serialize(m, ledger)
+    incoming_ids = m.incoming_transaction_ids
+    outgoing_ids = m.outgoing_transaction_ids
     {
       id: m.id,
-      incoming_ids: m.incoming_transaction_ids,
-      outgoing_ids: m.outgoing_transaction_ids,
+      incoming_ids: incoming_ids,
+      outgoing_ids: outgoing_ids,
       note: m.note,
       discrepancy: m.discrepancy_cents / 100.0,
       created_by_name: m.created_by.name.presence || m.created_by.email,
-      created_at: m.created_at.iso8601
+      created_at: m.created_at.iso8601,
+      conflict: ledger.classify(incoming_ids + outgoing_ids) == :overlapping
     }
   end
 end

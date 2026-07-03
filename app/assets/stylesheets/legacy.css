@@ -474,3 +474,47 @@ tr.zero-point { background: #fff8c5; }
   white-space: nowrap;
 }
 
+.cutoff-select {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 13px;
+  font-weight: 600;
+  background: #fff;
+}
+
+.match-row-conflict { background: #fff8ed; }
+
+.conflict-badge {
+  display: inline-block;
+  margin-top: 4px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: var(--amber);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.cutoff-conflict-list {
+  max-height: 260px;
+  overflow-y: auto;
+  margin: 10px 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.cutoff-conflict-item {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #eef0f2;
+  font-size: 12px;
+}
+
+.cutoff-conflict-item:last-child { border-bottom: none; }
+.cutoff-conflict-item .side-in { color: var(--in-color); }
+.cutoff-conflict-item .side-out { color: var(--out-color); }
+

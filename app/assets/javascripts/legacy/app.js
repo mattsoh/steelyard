@@ -4,6 +4,10 @@ let allTransactions = [];
 let matches = [];
 let byId = new Map();
 
+let zeroBalanceOptions = [];
+let zeroBalanceSelectedId = null;
+let pendingCutoffId = null;
+
 let selectedIncomingIds = [];
 let selectedOutgoingIds = [];
 
@@ -55,7 +59,9 @@ async function loadAll() {
   byId = new Map(allTransactions.map((t) => [t.id, t]));
   matches = matchData.matches;
 
-  document.getElementById("stat-zero-date").textContent = txData.zero_balance_date || "n/a";
+  zeroBalanceOptions = txData.zero_balance_options || [];
+  zeroBalanceSelectedId = txData.zero_balance_selected_id || null;
+  renderCutoffSelect();
 
   render();
 }
@@ -376,6 +382,11 @@ function matchMetaHtml(m) {
   return `<div class="match-meta">Matched by ${escapeHtml(m.created_by_name)}${when ? " on " + when : ""}</div>`;
 }
 
+function conflictBadgeHtml(m) {
+  if (!m.conflict) return "";
+  return `<div class="conflict-badge" title="This match has legs on both sides of the current cutoff — one side is hidden, the other visible.">⚠ Spans cutoff</div>`;
+}
+
 function matchRowHtml(m) {
   const incoming = m.incoming_ids.map((id) => byId.get(id)).filter(Boolean);
   const outgoing = m.outgoing_ids.map((id) => byId.get(id)).filter(Boolean);
@@ -387,10 +398,10 @@ function matchRowHtml(m) {
   const sideOut = outgoing.length
     ? outgoing.map((t) => `<div>${t.date} — ${escapeHtml(t.memo)}${infoIconHtml(t)} — ${fmt(t.amount)}</div>`).join("")
     : `<span class="side-empty">No outgoing</span>`;
-  return `<div class="match-row">
+  return `<div class="match-row${m.conflict ? " match-row-conflict" : ""}">
     <div class="side-in">${sideIn}</div>
     <div class="side-out">${sideOut}</div>
-    <div class="${discClass}">${discText}${matchMetaHtml(m)}</div>
+    <div class="${discClass}">${discText}${conflictBadgeHtml(m)}${matchMetaHtml(m)}</div>
     <div><button class="danger" data-delete="${m.id}">Undo</button></div>
   </div>`;
 }
@@ -420,6 +431,99 @@ function renderMatches() {
   renderMatchGroup(unbalanced, "matches-unbalanced-list", "matches-unbalanced-count", "No discrepancies 🎉");
   renderMatchGroup(balanced, "matches-balanced-list", "matches-balanced-count", "No balanced matches yet.");
 }
+
+function cutoffOptionLabel(o) {
+  return o.beginning ? "Beginning of history (show everything)" : o.date;
+}
+
+function renderCutoffSelect() {
+  const select = document.getElementById("cutoff-select");
+  select.innerHTML = zeroBalanceOptions
+    .map((o) => `<option value="${o.transaction_id}"${o.transaction_id === zeroBalanceSelectedId ? " selected" : ""}>${escapeHtml(cutoffOptionLabel(o))}</option>`)
+    .join("");
+}
+
+function cutoffConflictItemHtml(m) {
+  const sideIn = m.incoming.length
+    ? m.incoming.map((t) => `<div>${t.date} — ${escapeHtml(t.memo)} — <strong>${fmt(t.amount)}</strong></div>`).join("")
+    : `<span class="side-empty">No incoming</span>`;
+  const sideOut = m.outgoing.length
+    ? m.outgoing.map((t) => `<div>${t.date} — ${escapeHtml(t.memo)} — ${fmt(t.amount)}</div>`).join("")
+    : `<span class="side-empty">No outgoing</span>`;
+  return `<div class="cutoff-conflict-item">
+    <div class="side-in">${sideIn}</div>
+    <div class="side-out">${sideOut}</div>
+  </div>`;
+}
+
+function showCutoffConflictModal(transactionId, conflicts) {
+  pendingCutoffId = transactionId;
+  document.getElementById("cutoff-modal-count").textContent = conflicts.length;
+  document.getElementById("cutoff-modal-list").innerHTML = conflicts.map(cutoffConflictItemHtml).join("");
+  document.getElementById("cutoff-modal-overlay").classList.remove("hidden");
+}
+
+let cutoffBusy = false;
+
+// Held for the whole operation, including the post-success reload -- not
+// just the PATCH -- so a second change can't race the first, and so Cancel
+// can't wave through a request that's already been sent to the server.
+function setCutoffBusy(busy) {
+  cutoffBusy = busy;
+  document.getElementById("cutoff-select").disabled = busy;
+  document.getElementById("cutoff-modal-confirm").disabled = busy;
+  document.getElementById("cutoff-modal-cancel").disabled = busy;
+  document.getElementById("cutoff-modal-close").disabled = busy;
+}
+
+function hideCutoffModal() {
+  if (cutoffBusy) return;
+  pendingCutoffId = null;
+  document.getElementById("cutoff-modal-overlay").classList.add("hidden");
+  renderCutoffSelect();
+}
+
+async function changeCutoff(transactionId, confirmRemoval) {
+  if (cutoffBusy) return;
+  setCutoffBusy(true);
+  try {
+    const res = await fetch(`${API_BASE}/api/cutoff`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ transaction_id: transactionId, confirm: confirmRemoval }),
+    });
+
+    if (res.ok) {
+      document.getElementById("cutoff-modal-overlay").classList.add("hidden");
+      pendingCutoffId = null;
+      await loadAll();
+      return;
+    }
+
+    const err = await res.json();
+    if (res.status === 409 && Array.isArray(err.conflicts)) {
+      showCutoffConflictModal(transactionId, err.conflicts);
+      return;
+    }
+
+    alert("Could not change cutoff: " + (err.error || "unknown error"));
+    renderCutoffSelect();
+  } finally {
+    setCutoffBusy(false);
+  }
+}
+
+document.getElementById("cutoff-select").addEventListener("change", (e) => {
+  changeCutoff(e.target.value, false);
+});
+document.getElementById("cutoff-modal-confirm").addEventListener("click", () => {
+  if (pendingCutoffId) changeCutoff(pendingCutoffId, true);
+});
+document.getElementById("cutoff-modal-cancel").addEventListener("click", hideCutoffModal);
+document.getElementById("cutoff-modal-close").addEventListener("click", hideCutoffModal);
+document.getElementById("cutoff-modal-overlay").addEventListener("click", (e) => {
+  if (e.target.id === "cutoff-modal-overlay") hideCutoffModal();
+});
 
 document.getElementById("btn-confirm").addEventListener("click", confirmMatch);
 document.getElementById("btn-cancel").addEventListener("click", cancelMatch);
