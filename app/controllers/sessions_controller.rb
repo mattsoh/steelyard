@@ -1,20 +1,35 @@
 class SessionsController < ApplicationController
-  skip_before_action :require_login!, only: [ :new, :callback, :destroy, :dev_login ]
+  skip_before_action :require_login!, only: [ :new, :callback, :destroy ]
 
 
-  def new
+  def new 
     state = SecureRandom.hex(16)
     session[:oauth_state] = state
     redirect_to Hcb.oauth_client.auth_code.authorize_url(
       redirect_uri: ENV.fetch("HCB_OAUTH_REDIRECT_URI"),
-      scope: "restricted organizations:read ledgers:read",
+      # "restricted" turns on per-action OAuth scope enforcement on HCB's
+      # side; without it a token gets full legacy access regardless of the
+      # other scopes listed. users:read covers GET /api/v4/user (users#me)
+      # and organizations:read covers GET /api/v4/user/organizations
+      # (events#index), in addition to guarding the organization/transaction
+      # endpoints below.
+      scope: "restricted users:read organizations:read ledgers:read",
       state: state
     ), allow_other_host: true
   end
 
   def callback
-    if params[:state].blank? || params[:state] != session.delete(:oauth_state)
-      redirect_to login_path, alert: "Login failed: invalid OAuth state." and return
+    expected_state = session.delete(:oauth_state)
+
+    # Rendered directly rather than redirected to login_path: that path immediately
+    # bounces back to HCB, so redirecting a failure there is an infinite loop with no
+    # chance for the user (or us) to see what went wrong.
+    if params[:error].present?
+      return render_login_error("HCB login failed: #{params[:error_description] || params[:error]}")
+    end
+
+    if params[:state].blank? || params[:state] != expected_state
+      return render_login_error("Login failed: invalid OAuth state.")
     end
 
     token = Hcb.oauth_client.auth_code.get_token(
@@ -35,12 +50,18 @@ class SessionsController < ApplicationController
 
     session[:user_id] = user.id
     redirect_to organizations_path
-  rescue OAuth2::Error
-    redirect_to login_path, alert: "Login with HCB failed. Please try again."
+  rescue OAuth2::Error => e
+    render_login_error("Login with HCB failed: #{e.message}")
   end
 
   def destroy
     reset_session
     redirect_to login_path
+  end
+
+  private
+
+  def render_login_error(message)
+    render plain: "#{message}\n\nTry logging in again: #{login_url}", status: :unauthorized
   end
 end
