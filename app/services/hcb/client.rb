@@ -10,6 +10,8 @@ module Hcb
       @user = user
     end
 
+    def user_id = @user.id
+
     def user = get("/api/v4/user")
     def organizations = get("/api/v4/user/organizations")
 

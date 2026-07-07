@@ -1,14 +1,15 @@
 # Stands in for Hcb::Client in tests so nothing hits the real HCB API.
 # Construct with canned responses for whichever methods a given test exercises.
 class FakeHcbClient
-  attr_reader :transactions_calls
+  attr_reader :transactions_calls, :user_id
 
-  def initialize(transactions: [], members: [], user: {}, organizations: [])
+  def initialize(transactions: [], members: [], user: {}, organizations: [], user_id: nil)
     @transactions = transactions
     @members = members
     @user = user
     @organizations = organizations
     @transactions_calls = 0
+    @user_id = user_id
   end
 
   def user = @user

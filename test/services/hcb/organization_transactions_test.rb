@@ -1,6 +1,9 @@
 require "test_helper"
 
 class Hcb::OrganizationTransactionsTest < ActiveSupport::TestCase
+  include ActiveJob::TestHelper
+  include ActiveSupport::Testing::TimeHelpers
+
   setup do
     @previous_cache = Rails.cache
     Rails.cache = ActiveSupport::Cache::MemoryStore.new
@@ -90,6 +93,34 @@ class Hcb::OrganizationTransactionsTest < ActiveSupport::TestCase
     assert_equal [ "txn_1" ], result[:data].map { |t| t["id"] }
     assert_not result[:has_more]
     assert_equal calls_before, client.transactions_calls
+  end
+
+  test "all enqueues a background refresh once the cached entry nears expiry" do
+    user = User.create!(hcb_user_id: "usr_1", access_token: "a", refresh_token: "b", token_expires_at: 1.hour.from_now)
+    client = FakeHcbClient.new(
+      transactions: [ { "id" => "txn_1", "date" => "2026-01-01", "memo" => "A", "amount_cents" => 100 } ],
+      user_id: user.id
+    )
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+    service.all
+
+    travel(Hcb::OrganizationTransactions::TTL - Hcb::OrganizationTransactions::REFRESH_AHEAD_WINDOW + 1.second) do
+      assert_enqueued_with(job: WarmOrganizationTransactionsJob, args: [ user.id, "org_1", { filters: {} } ]) do
+        service.all
+      end
+    end
+  end
+
+  test "all does not enqueue a background refresh when the client can't identify a user" do
+    client = FakeHcbClient.new(
+      transactions: [ { "id" => "txn_1", "date" => "2026-01-01", "memo" => "A", "amount_cents" => 100 } ]
+    )
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+    service.all
+
+    travel(Hcb::OrganizationTransactions::TTL - Hcb::OrganizationTransactions::REFRESH_AHEAD_WINDOW + 1.second) do
+      assert_no_enqueued_jobs(only: WarmOrganizationTransactionsJob) { service.all }
+    end
   end
 
   test "fetch_page buffers concurrent drains separately by stream_id" do
