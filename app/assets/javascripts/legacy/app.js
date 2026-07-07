@@ -15,6 +15,7 @@ let currentIncomingOrder = [];
 let currentOutgoingOrder = [];
 let lastIncomingClickId = null;
 let lastOutgoingClickId = null;
+let matchBusy = false;
 
 const fmt = (n) => (n < 0 ? "-$" : "$") + Math.abs(n).toFixed(2);
 
@@ -425,9 +426,11 @@ function renderTray() {
   diffRow.classList.toggle("unbalanced", diff !== 0);
 
   const confirmBtn = document.getElementById("btn-confirm");
-  confirmBtn.disabled = selectedIncomingIds.length === 0 && selectedOutgoingIds.length === 0;
-  confirmBtn.textContent =
-    diff === 0 && selectedIncomingIds.length && selectedOutgoingIds.length ? "Confirm match" : "Confirm as discrepancy";
+  confirmBtn.disabled = matchBusy || (selectedIncomingIds.length === 0 && selectedOutgoingIds.length === 0);
+  confirmBtn.textContent = matchBusy
+    ? "Saving…"
+    : diff === 0 && selectedIncomingIds.length && selectedOutgoingIds.length ? "Confirm match" : "Confirm as discrepancy";
+  document.getElementById("btn-cancel").disabled = matchBusy;
 }
 
 function round2(n) {
@@ -446,44 +449,52 @@ function resetSearchFields() {
 }
 
 async function confirmMatch() {
+  if (matchBusy) return;
   if (selectedIncomingIds.length === 0 && selectedOutgoingIds.length === 0) return;
-  const res = await fetch(`${API_BASE}/api/matches`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      incoming_ids: selectedIncomingIds,
-      outgoing_ids: selectedOutgoingIds,
-    }),
-  });
-  if (!res.ok) {
-    const err = await res.json();
-    if (res.status === 409) {
-      alert(err.error || "Someone else just matched one of these transactions. Refreshing the lists.");
-      selectedIncomingIds = [];
-      selectedOutgoingIds = [];
-      lastIncomingClickId = null;
-      lastOutgoingClickId = null;
-      await loadAll();
+  matchBusy = true;
+  render();
+  try {
+    const res = await fetch(`${API_BASE}/api/matches`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        incoming_ids: selectedIncomingIds,
+        outgoing_ids: selectedOutgoingIds,
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      if (res.status === 409) {
+        alert(err.error || "Someone else just matched one of these transactions. Refreshing the lists.");
+        selectedIncomingIds = [];
+        selectedOutgoingIds = [];
+        lastIncomingClickId = null;
+        lastOutgoingClickId = null;
+        await loadAll();
+        return;
+      }
+      alert("Could not save match: " + err.error);
       return;
     }
-    alert("Could not save match: " + err.error);
-    return;
+    // The server returns the full serialized match -- splice it straight into
+    // local state and re-render instead of a full loadAll(), which would
+    // re-drain and re-render the entire (often multi-thousand-row) transaction
+    // history just to reflect one new match.
+    const newMatch = await res.json();
+    matches.push(newMatch);
+    selectedIncomingIds = [];
+    selectedOutgoingIds = [];
+    lastIncomingClickId = null;
+    lastOutgoingClickId = null;
+    resetSearchFields();
+  } finally {
+    matchBusy = false;
+    render();
   }
-  // The server returns the full serialized match -- splice it straight into
-  // local state and re-render instead of a full loadAll(), which would
-  // re-drain and re-render the entire (often multi-thousand-row) transaction
-  // history just to reflect one new match.
-  const newMatch = await res.json();
-  matches.push(newMatch);
-  selectedIncomingIds = [];
-  selectedOutgoingIds = [];
-  lastIncomingClickId = null;
-  lastOutgoingClickId = null;
-  resetSearchFields();
-  render();
 }
 
 function cancelMatch() {
+  if (matchBusy) return;
   selectedIncomingIds = [];
   selectedOutgoingIds = [];
   lastIncomingClickId = null;
