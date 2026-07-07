@@ -4,6 +4,14 @@ class OrganizationLedger
   # a real transaction. Distinguishable from real HCB ids (e.g. "txn_...").
   BEGINNING_ID = "__beginning__".freeze
 
+  # #transaction_by_id's fallback (an id not in the org's drained list, e.g.
+  # a hidden-but-matched transaction from before the current view) hits HCB
+  # directly per id. Cached long-lived and per-id, unlike the whole-org list
+  # cache: a single already-settled transaction doesn't change, and this path
+  # gets hit repeatedly for the same handful of ids (matches referencing old
+  # transactions) on every unrelated /api/transactions or /api/matches load.
+  SINGLE_TRANSACTION_TTL = ENV.fetch("HCB_SINGLE_TRANSACTION_CACHE_TTL", 1.day).to_i.seconds
+
   ZeroOption = Struct.new(:date, :transaction_id, :index, keyword_init: true) do
     def beginning? = index == -1
   end
@@ -68,7 +76,7 @@ class OrganizationLedger
     index = index_of(id)
     return transactions[index] if index
 
-    raw = @client.transaction(id)
+    raw = Rails.cache.fetch("hcb:transaction:#{id}:v1", expires_in: SINGLE_TRANSACTION_TTL) { @client.transaction(id) }
     raw && Hcb::TransactionPresenter.new(raw)
   rescue OAuth2::Error => e
     raise unless e.response.status == 404
