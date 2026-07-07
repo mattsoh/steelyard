@@ -38,6 +38,7 @@ function showLedgerMessage(html) {
 async function load() {
   showLedgerMessage(`<div class="empty-msg loading-msg"><span class="loading-spinner"></span>Loading transactions…</div>`);
   provisional = [];
+  let lastTotalCount = null;
   let data, matchData;
   try {
     const matchesPromise = fetch(`${API_BASE}/api/matches`).then((r) => {
@@ -45,12 +46,23 @@ async function load() {
       return r.json();
     });
 
+    // Apply matches as soon as they arrive rather than waiting on the (often
+    // much slower) full ledger drain below -- matches is a single fast
+    // query, and matched/discrepancy status shouldn't sit blank for the
+    // whole multi-page HCB drain just because it's bundled with it. Errors
+    // here are handled below, once this same promise is awaited again.
+    matchesPromise.then((matchDataEarly) => {
+      applyMatches(matchDataEarly.matches);
+      renderProvisional(lastTotalCount);
+    }).catch(() => {});
+
     await loadPagesStreaming(`${API_BASE}/api/ledger/page`, (rows, totalCount) => {
       // Pages arrive newest-first, same order the table displays in -- no
       // reordering needed for this provisional view. Running balance and the
       // zero-point cutoff aren't knowable until the full history is in, so
       // they're left blank until the final, authoritative render below.
       provisional.push(...rows.map((r) => ({ ...r, running_balance: null, is_zero_point: false })));
+      lastTotalCount = totalCount;
       renderProvisional(totalCount);
     });
 
@@ -70,13 +82,7 @@ async function load() {
     return;
   }
 
-  matchedIds = new Set();
-  discrepancyIds = new Set();
-  for (const m of matchData.matches) {
-    const target = m.discrepancy === 0 ? matchedIds : discrepancyIds;
-    for (const iid of m.incoming_ids) target.add(iid);
-    for (const oid of m.outgoing_ids) target.add(oid);
-  }
+  applyMatches(matchData.matches);
 
   // Keep the zero-point row (as a reference) and everything after it,
   // then show newest first.
@@ -94,9 +100,10 @@ async function load() {
   render();
 }
 
-// Shown while pages are still streaming in: raw rows with no search/filter/
-// status styling and no running balance yet, just so the table isn't a blank
-// spinner for however long the full drain takes.
+// Shown while pages are still streaming in: raw rows with no search/filter
+// and no running balance yet (status styling is applied once matches load,
+// independently of the drain), just so the table isn't a blank spinner for
+// however long the full drain takes.
 function renderProvisional(totalCount) {
   document.getElementById("stat-count").textContent = totalCount
     ? `Loading… ${provisional.length} of ~${totalCount}`
@@ -104,7 +111,9 @@ function renderProvisional(totalCount) {
   const body = document.getElementById("ledger-body");
   body.innerHTML = provisional.map((r) => {
     const dirClass = r.amount > 0 ? "amt-in" : "amt-out";
-    return `<tr>
+    const status = rowStatus(r);
+    const statusClass = status === "discrepancy" ? "ledger-discrepancy" : status === "matched" ? "ledger-matched" : "";
+    return `<tr class="${statusClass}">
       <td>${r.date}</td>
       <td class="memo-cell" title="${escapeHtml(r.memo)}">${escapeHtml(r.memo)}</td>
       <td class="num ${dirClass}">${fmt(r.amount)}</td>
@@ -113,6 +122,16 @@ function renderProvisional(totalCount) {
       <td>${escapeHtml(r.category_label)}</td>
     </tr>`;
   }).join("");
+}
+
+function applyMatches(matches) {
+  matchedIds = new Set();
+  discrepancyIds = new Set();
+  for (const m of matches) {
+    const target = m.discrepancy === 0 ? matchedIds : discrepancyIds;
+    for (const iid of m.incoming_ids) target.add(iid);
+    for (const oid of m.outgoing_ids) target.add(oid);
+  }
 }
 
 function rowStatus(r) {

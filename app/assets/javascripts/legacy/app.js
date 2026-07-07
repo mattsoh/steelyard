@@ -81,6 +81,16 @@ async function loadAll() {
       return r.json();
     });
 
+    // Apply matches as soon as they arrive rather than waiting on the (often
+    // much slower) full transaction drain below -- matches is a single fast
+    // query, and matched/unmatched status shouldn't sit blank/wrong for the
+    // whole multi-page HCB drain just because it's bundled with it. Errors
+    // here are handled below, once this same promise is awaited again.
+    matchesPromise.then((data) => {
+      matches = data.matches;
+      render();
+    }).catch(() => {});
+
     // Render rows as pages stream in so the lists aren't a blank spinner for
     // the full multi-page HCB drain. Cutoff filtering and matched/unmatched
     // status can shift once the real data lands below -- rows may appear
