@@ -70,6 +70,9 @@ class OrganizationLedger
 
     raw = @client.transaction(id)
     raw && Hcb::TransactionPresenter.new(raw)
+  rescue OAuth2::Error => e
+    raise unless e.response.status == 404
+    nil
   end
 
   # How a match relates to a cutoff, given its transaction ids:

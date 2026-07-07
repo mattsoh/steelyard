@@ -13,10 +13,13 @@ class Api::MatchesController < ApplicationController
     incoming_ids = Array(params[:incoming_ids]).map(&:to_s)
     outgoing_ids = Array(params[:outgoing_ids]).map(&:to_s)
 
-    # Only the specific legs being matched are needed here, so fetch them
-    # directly instead of draining the org's whole transaction history
-    # (which can be dozens of HCB requests) just to validate a couple of ids.
-    by_id = (incoming_ids + outgoing_ids).uniq.index_with { |id| fetch_transaction(id) }
+    # The legs being matched almost always came from the ledger the frontend
+    # already rendered, so look them up there (served from the cached org
+    # drain) instead of hitting HCB per id -- one HCB round trip per leg,
+    # serialized, was adding seconds to a "simple" match. transaction_by_id
+    # only falls back to a live HCB call when a leg isn't in the cache.
+    ledger = OrganizationLedger.new(hcb_client, organization_id)
+    by_id = (incoming_ids + outgoing_ids).uniq.index_with { |id| ledger.transaction_by_id(id) }
 
     result = Matches::Create.new(
       organization_id: organization_id,
@@ -31,7 +34,6 @@ class Api::MatchesController < ApplicationController
       # Full serialized match, not just id/discrepancy, so the frontend can
       # splice it straight into its local match list instead of re-fetching
       # (and re-rendering) everything via a full reload.
-      ledger = OrganizationLedger.new(hcb_client, organization_id)
       render json: serialize(result.match, ledger), status: :created
     else
       render json: { error: result.error }, status: result.status
@@ -50,14 +52,6 @@ class Api::MatchesController < ApplicationController
   end
 
   private
-
-  def fetch_transaction(id)
-    raw = hcb_client.transaction(id)
-    raw && Hcb::TransactionPresenter.new(raw)
-  rescue OAuth2::Error => e
-    raise unless e.response.status == 404
-    nil
-  end
 
   def serialize(m, ledger)
     incoming_ids = m.incoming_transaction_ids
