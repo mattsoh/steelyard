@@ -14,7 +14,7 @@ module Hcb
   # org history. Only a truly first-ever drain (or one where the baseline has
   # aged out after BASELINE_TTL of inactivity) pays the full-history cost.
   class OrganizationTransactions
-    TTL = ENV.fetch("HCB_TRANSACTION_CACHE_TTL", 600).to_i.seconds
+    TTL = ENV.fetch("HCB_TRANSACTION_CACHE_TTL", 1800).to_i.seconds
     PAGE_SIZE = 100
 
     # Once a cached entry is within this long of expiring, #all kicks off a
