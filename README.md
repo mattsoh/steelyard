@@ -5,6 +5,8 @@ donations with the outgoing transactions that account for them, and see what's s
 Reads organizations and ledgers live from the [HCB v4 API](https://github.com/hackclub/hcb)
 (read-only, OAuth2); matches and their audit trail live in this app's Postgres.
 
+Favicon made by [Candy][https://github.com/codingkatty]!
+
 ## Local setup
 
 1. Ruby 3.4.9 (see `.ruby-version`), Postgres running locally.
