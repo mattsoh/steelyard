@@ -67,8 +67,14 @@ module Hcb
     # specific transactions and shouldn't have to pay for materializing the
     # whole org history to get them. Returns nil on a cache miss (side caches
     # not yet warm for this drain); callers fall back to the slower path.
+    #
+    # Memoized per instance: callers like Api::TransactionsController#index
+    # call this once per referenced match leg (dozens to hundreds of times in
+    # one request), and Rails.cache.read deep-copies/deserializes the whole
+    # by-id blob on every call -- without memoizing, that's the whole org's
+    # transaction history re-deserialized once per referenced id.
     def find(id)
-      Rails.cache.read(by_id_key)&.dig(id)
+      by_id_cache&.dig(id)
     end
 
     # Chronological (oldest-first, declined-excluded) position/balance data
@@ -76,9 +82,10 @@ module Hcb
     # OrganizationLedger answer "where does this id sit relative to the
     # cutoff" and "what are the zero-balance crossings" in O(1)/O(crossings)
     # instead of re-walking full org history per request. Returns nil on a
-    # cache miss.
+    # cache miss. Memoized per instance, same reasoning as #find above.
     def derived
-      Rails.cache.read(derived_key)
+      return @derived if defined?(@derived)
+      @derived = Rails.cache.read(derived_key)
     end
 
     # Drains fresh and unconditionally overwrites the cache, regardless of
@@ -146,6 +153,11 @@ module Hcb
 
     def filters_cache_key
       @filters.to_a.sort_by(&:first).to_h.to_json
+    end
+
+    def by_id_cache
+      return @by_id_cache if defined?(@by_id_cache)
+      @by_id_cache = Rails.cache.read(by_id_key)
     end
 
     # Computed once per drain (see the three write sites above), not per
