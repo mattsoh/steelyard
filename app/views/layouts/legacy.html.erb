@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title><%= content_for(:title) || "Steelyard" %></title>
 <%= csrf_meta_tags %>
+<%= favicon_link_tag asset_path('favicon-light.svg'), rel: 'icon', type: 'image/svg+xml', media: '(prefers-color-scheme: light)' %>
+<%= favicon_link_tag asset_path('favicon-dark.svg'), rel: 'icon', type: 'image/svg+xml', media: '(prefers-color-scheme: dark)' %>
 <script>window.HCB_ORGANIZATION_ID = <%= raw organization_id.to_json %>;</script>
 <%= stylesheet_link_tag "legacy", "data-turbo-track": "reload" %>
 </head>
