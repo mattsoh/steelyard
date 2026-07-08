@@ -95,7 +95,7 @@ class Hcb::OrganizationTransactionsTest < ActiveSupport::TestCase
     assert_equal calls_before, client.transactions_calls
   end
 
-  test "all enqueues a background refresh once the cached entry nears expiry" do
+  test "all enqueues a background refresh once the cached entry is due for a check" do
     user = User.create!(hcb_user_id: "usr_1", access_token: "a", refresh_token: "b", token_expires_at: 1.hour.from_now)
     client = FakeHcbClient.new(
       transactions: [ { "id" => "txn_1", "date" => "2026-01-01", "memo" => "A", "amount_cents" => 100 } ],
@@ -104,10 +104,24 @@ class Hcb::OrganizationTransactionsTest < ActiveSupport::TestCase
     service = Hcb::OrganizationTransactions.new(client, "org_1")
     service.all
 
-    travel(Hcb::OrganizationTransactions::TTL - Hcb::OrganizationTransactions::REFRESH_AHEAD_WINDOW + 1.second) do
+    travel(Hcb::OrganizationTransactions::BACKGROUND_REFRESH_INTERVAL + 1.second) do
       assert_enqueued_with(job: WarmOrganizationTransactionsJob, args: [ user.id, "org_1", { filters: {} } ]) do
         service.all
       end
+    end
+  end
+
+  test "all does not enqueue a background refresh before the check interval has elapsed" do
+    user = User.create!(hcb_user_id: "usr_1", access_token: "a", refresh_token: "b", token_expires_at: 1.hour.from_now)
+    client = FakeHcbClient.new(
+      transactions: [ { "id" => "txn_1", "date" => "2026-01-01", "memo" => "A", "amount_cents" => 100 } ],
+      user_id: user.id
+    )
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+    service.all
+
+    travel(Hcb::OrganizationTransactions::BACKGROUND_REFRESH_INTERVAL - 1.second) do
+      assert_no_enqueued_jobs(only: WarmOrganizationTransactionsJob) { service.all }
     end
   end
 
@@ -118,7 +132,7 @@ class Hcb::OrganizationTransactionsTest < ActiveSupport::TestCase
     service = Hcb::OrganizationTransactions.new(client, "org_1")
     service.all
 
-    travel(Hcb::OrganizationTransactions::TTL - Hcb::OrganizationTransactions::REFRESH_AHEAD_WINDOW + 1.second) do
+    travel(Hcb::OrganizationTransactions::BACKGROUND_REFRESH_INTERVAL + 1.second) do
       assert_no_enqueued_jobs(only: WarmOrganizationTransactionsJob) { service.all }
     end
   end

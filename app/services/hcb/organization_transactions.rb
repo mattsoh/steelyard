@@ -17,11 +17,15 @@ module Hcb
     TTL = ENV.fetch("HCB_TRANSACTION_CACHE_TTL", 1800).to_i.seconds
     PAGE_SIZE = 100
 
-    # Once a cached entry is within this long of expiring, #all kicks off a
-    # background redrain (WarmOrganizationTransactionsJob) instead of letting
-    # it lapse -- so the next viewer's request is served from a warm cache
-    # rather than blocking on a full multi-page HCB drain.
-    REFRESH_AHEAD_WINDOW = 120.seconds
+    # Once the current cache entry is at least this old, #all kicks off a
+    # background redrain (WarmOrganizationTransactionsJob) on top of serving
+    # the (possibly slightly stale) cached result immediately -- so a viewer
+    # who's been sitting on the page sees new HCB activity within roughly
+    # this window, without every request paying for a live HCB round trip.
+    # Deliberately much shorter than TTL: TTL bounds how stale data can get
+    # before a request is forced to wait on a drain; this bounds how stale
+    # it gets in the common case where background warming keeps up.
+    BACKGROUND_REFRESH_INTERVAL = ENV.fetch("HCB_TRANSACTION_BACKGROUND_REFRESH_INTERVAL", 60).to_i.seconds
 
     # How many of the most-recently-seen transactions every redrain
     # unconditionally re-fetches from HCB, instead of trusting the previous
@@ -213,14 +217,15 @@ module Hcb
     # user's Hcb::Client) -- there's no local record of which users belong to
     # which HCB organization, so warming can only piggyback on real traffic.
     # The refresh_lock_key write is a compare-and-set: only the first request
-    # to observe a stale-but-not-yet-expired cache enqueues the job.
+    # to observe a due-for-a-check cache enqueues the job; everyone else
+    # within the interval just gets served the current cache.
     def maybe_refresh_ahead
       return unless @client.respond_to?(:user_id) && @client.user_id
 
       fetched_at = Rails.cache.read(fetched_at_key)
       return unless fetched_at
-      return if Time.now - fetched_at < TTL - REFRESH_AHEAD_WINDOW
-      return unless Rails.cache.write(refresh_lock_key, true, expires_in: REFRESH_AHEAD_WINDOW, unless_exist: true)
+      return if Time.now - fetched_at < BACKGROUND_REFRESH_INTERVAL
+      return unless Rails.cache.write(refresh_lock_key, true, expires_in: BACKGROUND_REFRESH_INTERVAL, unless_exist: true)
 
       WarmOrganizationTransactionsJob.perform_later(@client.user_id, @organization_id, filters: @filters)
     end

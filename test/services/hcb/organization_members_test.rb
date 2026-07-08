@@ -11,14 +11,15 @@ class Hcb::OrganizationMembersTest < ActiveSupport::TestCase
     Rails.cache = @previous_cache
   end
 
+  FakeErrorResponse = Struct.new(:status, :body, :parsed, keyword_init: true)
+
   class RaisingClient
     def initialize(status)
       @status = status
     end
 
     def organization(_id, expand: [])
-      response = OpenStruct.new(status: @status)
-      raise OAuth2::Error.new(OpenStruct.new(status: @status, body: '{"error":"not_authorized"}', parsed: { "error" => "not_authorized" }))
+      raise OAuth2::Error.new(FakeErrorResponse.new(status: @status, body: '{"error":"not_authorized"}', parsed: { "error" => "not_authorized" }))
     end
   end
 
