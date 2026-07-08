@@ -573,6 +573,31 @@ function renderMatches() {
   renderMatchGroup(balanced, "matches-balanced-list", "matches-balanced-count", "No balanced matches yet.");
 }
 
+let matchesRefreshing = false;
+
+// Re-fetches just /api/matches (a single fast query) and re-renders --
+// unlike loadAll(), it doesn't touch allTransactions, so it doesn't re-drain
+// the full (often multi-thousand-row) HCB transaction history just to pick
+// up matches a collaborator created or undid while this tab was open.
+async function refreshMatches() {
+  if (matchesRefreshing) return;
+  matchesRefreshing = true;
+  const btn = document.getElementById("btn-refresh-matches");
+  btn.disabled = true;
+  try {
+    const res = await fetch(`${API_BASE}/api/matches`);
+    if (!res.ok) throw new Error("bad response");
+    const data = await res.json();
+    matches = data.matches;
+    render();
+  } catch (e) {
+    alert("Could not refresh matches. Please try again.");
+  } finally {
+    matchesRefreshing = false;
+    btn.disabled = false;
+  }
+}
+
 function cutoffOptionLabel(o) {
   return o.beginning ? "Beginning of history (show everything)" : o.date;
 }
@@ -668,6 +693,7 @@ document.getElementById("cutoff-modal-overlay").addEventListener("click", (e) =>
 
 document.getElementById("btn-confirm").addEventListener("click", confirmMatch);
 document.getElementById("btn-cancel").addEventListener("click", cancelMatch);
+document.getElementById("btn-refresh-matches").addEventListener("click", refreshMatches);
 document.getElementById("search-incoming").addEventListener("input", renderLists);
 document.getElementById("search-incoming-amount").addEventListener("input", renderLists);
 document.getElementById("search-incoming-after").addEventListener("input", renderLists);
