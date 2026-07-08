@@ -23,11 +23,21 @@ module OrganizationScoped
     membership = Hcb::OrganizationMembers.role_for(
       client: hcb_client, organization_id: params[:organization_id], hcb_user_id: current_user.hcb_user_id
     )
-    return head :forbidden unless membership.role
+    return render_organization_not_found unless membership.role
 
     @organization_id = membership.organization_id
     @organization_slug = membership.organization_slug
     @current_role = membership.role
+  end
+
+  # Deliberately the same response whether the org doesn't exist or the user
+  # just isn't a member of it -- distinguishing the two would let someone
+  # probe for the existence of orgs they can't access.
+  def render_organization_not_found
+    respond_to do |format|
+      format.json { render json: { error: "Organization not found." }, status: :not_found }
+      format.any { render plain: "Organization not found.", status: :not_found }
+    end
   end
 
   def require_matcher_role!
