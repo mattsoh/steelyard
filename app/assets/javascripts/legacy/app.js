@@ -25,6 +25,69 @@ let currentOutgoingOrder = [];
 let lastIncomingClickId = null;
 let lastOutgoingClickId = null;
 let matchBusy = false;
+let traySnapshotRestored = false;
+
+const TRAY_STORAGE_KEY = `steelyard.tray.${window.HCB_ORGANIZATION_ID}`;
+
+// Persists the in-progress (unsaved) match tray to localStorage, which is
+// shared across every tab in the browser, so a refresh (or an accidental tab
+// close) doesn't throw away work someone was assembling but hadn't confirmed
+// yet. Restored once per page load, after the full transaction/match set has
+// landed, so stale ids (matched or deleted elsewhere in the meantime) can be
+// filtered out rather than silently re-selected.
+function saveTraySnapshot() {
+  try {
+    if (selectedIncomingIds.length === 0 && selectedOutgoingIds.length === 0 && editingMatchId === null && !stashedSelection) {
+      localStorage.removeItem(TRAY_STORAGE_KEY);
+      return;
+    }
+    localStorage.setItem(TRAY_STORAGE_KEY, JSON.stringify({
+      selectedIncomingIds,
+      selectedOutgoingIds,
+      editingMatchId,
+      editingMatchOriginal,
+      stashedSelection,
+    }));
+  } catch (e) {}
+}
+
+function restoreTraySnapshot() {
+  if (traySnapshotRestored) return;
+  traySnapshotRestored = true;
+  let snap;
+  try {
+    const raw = localStorage.getItem(TRAY_STORAGE_KEY);
+    if (!raw) return;
+    snap = JSON.parse(raw);
+  } catch (e) {
+    return;
+  }
+
+  const validId = (id) => byId.has(id);
+  const used = usedIds();
+
+  if (snap.editingMatchId !== null) {
+    const m = matches.find((x) => x.id === snap.editingMatchId);
+    if (m) {
+      matches = matches.filter((x) => x.id !== snap.editingMatchId);
+      editingMatchId = snap.editingMatchId;
+      editingMatchOriginal = m;
+    }
+  }
+
+  selectedIncomingIds = (snap.selectedIncomingIds || []).filter(validId);
+  selectedOutgoingIds = (snap.selectedOutgoingIds || []).filter(validId);
+  if (editingMatchId === null) {
+    selectedIncomingIds = selectedIncomingIds.filter((id) => !used.has(id));
+    selectedOutgoingIds = selectedOutgoingIds.filter((id) => !used.has(id));
+  }
+
+  if (snap.stashedSelection) {
+    const incomingIds = (snap.stashedSelection.incomingIds || []).filter(validId).filter((id) => !used.has(id));
+    const outgoingIds = (snap.stashedSelection.outgoingIds || []).filter(validId).filter((id) => !used.has(id));
+    stashedSelection = incomingIds.length || outgoingIds.length ? { incomingIds, outgoingIds } : null;
+  }
+}
 
 const fmt = (n) => (n < 0 ? "-$" : "$") + Math.abs(n).toFixed(2);
 
@@ -140,6 +203,7 @@ async function loadAll() {
   zeroBalanceSelectedId = txData.zero_balance_selected_id || null;
   renderCutoffSelect();
 
+  restoreTraySnapshot();
   render();
 }
 
@@ -162,6 +226,7 @@ function render() {
   renderLists();
   renderTray();
   renderMatches();
+  saveTraySnapshot();
 }
 
 function renderStats() {
