@@ -206,6 +206,15 @@ main {
 
 .tray-body { padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
 
+.tray-editing-banner {
+  background: #fff8c5;
+  border: 1px solid #d4a72c;
+  color: #4d3800;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
 .tray-arrow { text-align: center; font-size: 11px; color: #656d76; }
 
 .tray-incoming-list, .tray-outgoing-list {
@@ -305,12 +314,17 @@ button.danger {
 
 .match-row {
   display: grid;
-  grid-template-columns: 1fr 1fr 90px 80px;
+  grid-template-columns: 1fr 1fr 90px 140px;
   gap: 10px;
   padding: 10px 14px;
   border-bottom: 1px solid #eef0f2;
   align-items: center;
   font-size: 13px;
+}
+
+.match-row-actions {
+  display: flex;
+  gap: 6px;
 }
 
 .match-row .side-in { color: var(--in-color); }

@@ -1,7 +1,7 @@
 class Api::MatchesController < ApplicationController
   include OrganizationScoped
 
-  before_action :require_matcher_role!, only: [ :create, :destroy ]
+  before_action :require_matcher_role!, only: [ :create, :update, :destroy ]
 
   def index
     ledger = OrganizationLedger.new(hcb_client, organization_id)
@@ -35,6 +35,30 @@ class Api::MatchesController < ApplicationController
       # splice it straight into its local match list instead of re-fetching
       # (and re-rendering) everything via a full reload.
       render json: serialize(result.match, ledger), status: :created
+    else
+      render json: { error: result.error }, status: result.status
+    end
+  end
+
+  def update
+    match = Match.active.for_organization(organization_id).find_by(id: params[:id])
+    incoming_ids = Array(params[:incoming_ids]).map(&:to_s)
+    outgoing_ids = Array(params[:outgoing_ids]).map(&:to_s)
+
+    ledger = OrganizationLedger.new(hcb_client, organization_id)
+    by_id = (incoming_ids + outgoing_ids).uniq.index_with { |id| ledger.transaction_by_id(id) }
+
+    result = Matches::Update.new(
+      match: match,
+      user: current_user,
+      incoming_ids: incoming_ids,
+      outgoing_ids: outgoing_ids,
+      note: params[:note].to_s,
+      transactions_by_id: by_id
+    ).call
+
+    if result.success?
+      render json: serialize(result.match, ledger)
     else
       render json: { error: result.error }, status: result.status
     end

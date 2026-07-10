@@ -20,6 +20,7 @@ Rails.application.routes.draw do
       get    "transactions/page", to: "transactions#page"
       get    "matches",           to: "matches#index"
       post   "matches",           to: "matches#create"
+      patch  "matches/:id",       to: "matches#update"
       delete "matches/:id",       to: "matches#destroy"
       get    "ledger",            to: "ledger#index"
       get    "ledger/page",       to: "ledger#page"

@@ -11,6 +11,15 @@ let pendingCutoffId = null;
 let selectedIncomingIds = [];
 let selectedOutgoingIds = [];
 
+// When editing an existing match, its legs are pulled into the selection
+// above (and the match itself removed from `matches` so its legs show up as
+// selectable again) -- these track that state so confirm/cancel can tell an
+// edit-in-progress from an ordinary new match, and so any match the user was
+// already assembling in the tray can be stashed and restored afterward.
+let editingMatchId = null;
+let editingMatchOriginal = null;
+let stashedSelection = null;
+
 let currentIncomingOrder = [];
 let currentOutgoingOrder = [];
 let lastIncomingClickId = null;
@@ -366,6 +375,8 @@ function renderTray() {
   empty.classList.add("hidden");
   body.classList.remove("hidden");
 
+  document.getElementById("tray-editing-banner").classList.toggle("hidden", editingMatchId === null);
+
   const inList = document.getElementById("tray-incoming-list");
   if (selectedIncomingIds.length === 0) {
     inList.innerHTML = `<div class="empty-msg">Click incoming transactions on the left to add them here.</div>`;
@@ -427,9 +438,11 @@ function renderTray() {
 
   const confirmBtn = document.getElementById("btn-confirm");
   confirmBtn.disabled = matchBusy || (selectedIncomingIds.length === 0 && selectedOutgoingIds.length === 0);
+  const matchLabel = diff === 0 && selectedIncomingIds.length && selectedOutgoingIds.length ? "match" : "as discrepancy";
   confirmBtn.textContent = matchBusy
     ? "Saving…"
-    : diff === 0 && selectedIncomingIds.length && selectedOutgoingIds.length ? "Confirm match" : "Confirm as discrepancy";
+    : editingMatchId !== null ? `Save changes (${matchLabel})` : `Confirm ${matchLabel}`;
+  document.getElementById("btn-cancel").textContent = editingMatchId !== null ? "Cancel edit" : "Cancel";
   document.getElementById("btn-cancel").disabled = matchBusy;
 }
 
@@ -448,18 +461,26 @@ function resetSearchFields() {
   });
 }
 
+function restoreStashedSelection() {
+  selectedIncomingIds = stashedSelection ? stashedSelection.incomingIds : [];
+  selectedOutgoingIds = stashedSelection ? stashedSelection.outgoingIds : [];
+  stashedSelection = null;
+}
+
 async function confirmMatch() {
   if (matchBusy) return;
   if (selectedIncomingIds.length === 0 && selectedOutgoingIds.length === 0) return;
+  const isEdit = editingMatchId !== null;
   matchBusy = true;
   render();
   try {
-    const res = await fetch(`${API_BASE}/api/matches`, {
-      method: "POST",
+    const res = await fetch(`${API_BASE}/api/matches${isEdit ? "/" + editingMatchId : ""}`, {
+      method: isEdit ? "PATCH" : "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         incoming_ids: selectedIncomingIds,
         outgoing_ids: selectedOutgoingIds,
+        note: isEdit ? editingMatchOriginal.note || "" : undefined,
       }),
     });
     if (!res.ok) {
@@ -470,33 +491,62 @@ async function confirmMatch() {
         selectedOutgoingIds = [];
         lastIncomingClickId = null;
         lastOutgoingClickId = null;
+        editingMatchId = null;
+        editingMatchOriginal = null;
+        stashedSelection = null;
         await loadAll();
         return;
       }
-      alert("Could not save match: " + err.error);
+      alert(`Could not save ${isEdit ? "changes" : "match"}: ` + err.error);
       return;
     }
     // The server returns the full serialized match -- splice it straight into
     // local state and re-render instead of a full loadAll(), which would
     // re-drain and re-render the entire (often multi-thousand-row) transaction
-    // history just to reflect one new match.
-    const newMatch = await res.json();
-    matches.push(newMatch);
-    selectedIncomingIds = [];
-    selectedOutgoingIds = [];
+    // history just to reflect one new/updated match.
+    const savedMatch = await res.json();
+    matches.push(savedMatch);
+    editingMatchId = null;
+    editingMatchOriginal = null;
+    restoreStashedSelection();
     lastIncomingClickId = null;
     lastOutgoingClickId = null;
-    resetSearchFields();
+    if (!isEdit) resetSearchFields();
   } finally {
     matchBusy = false;
     render();
   }
 }
 
+function editMatch(id) {
+  if (matchBusy || editingMatchId !== null) return;
+  const m = matches.find((x) => x.id === id);
+  if (!m) return;
+
+  stashedSelection = selectedIncomingIds.length || selectedOutgoingIds.length
+    ? { incomingIds: [...selectedIncomingIds], outgoingIds: [...selectedOutgoingIds] }
+    : null;
+
+  editingMatchId = id;
+  editingMatchOriginal = m;
+  matches = matches.filter((x) => x.id !== id);
+
+  selectedIncomingIds = [...m.incoming_ids];
+  selectedOutgoingIds = [...m.outgoing_ids];
+  lastIncomingClickId = null;
+  lastOutgoingClickId = null;
+
+  render();
+}
+
 function cancelMatch() {
   if (matchBusy) return;
-  selectedIncomingIds = [];
-  selectedOutgoingIds = [];
+  if (editingMatchId !== null) {
+    matches.push(editingMatchOriginal);
+    editingMatchId = null;
+    editingMatchOriginal = null;
+  }
+  restoreStashedSelection();
   lastIncomingClickId = null;
   lastOutgoingClickId = null;
   render();
@@ -539,11 +589,19 @@ function matchRowHtml(m) {
   const sideOut = outgoing.length
     ? outgoing.map((t) => `<div>${t.date} — ${escapeHtml(t.memo)}${hcbCodeInlineHtml(t)}${infoIconHtml(t)}${HCBLinkHtml(t)} — ${fmt(t.amount)}</div>`).join("")
     : `<span class="side-empty">No outgoing</span>`;
+  // Editing pulls a match out of `matches` (and into the tray) entirely, so
+  // this row is never rendered for the match currently being edited -- the
+  // disabled state here only guards *other* rows against starting a second
+  // edit (or being undone) while one is already in progress.
+  const otherRowDisabled = editingMatchId !== null ? "disabled" : "";
   return `<div class="match-row${m.conflict ? " match-row-conflict" : ""}">
     <div class="side-in">${sideIn}</div>
     <div class="side-out">${sideOut}</div>
     <div class="${discClass}">${discText}${conflictBadgeHtml(m)}${matchMetaHtml(m)}</div>
-    <div><button class="danger" data-delete="${m.id}">Undo</button></div>
+    <div class="match-row-actions">
+      <button class="secondary" data-edit="${m.id}" ${otherRowDisabled}>Edit</button>
+      <button class="danger" data-delete="${m.id}" ${otherRowDisabled}>Undo</button>
+    </div>
   </div>`;
 }
 
@@ -559,6 +617,9 @@ function renderMatchGroup(group, listId, countId, emptyMsg) {
   const sorted = [...group].sort((a, b) => b.id - a.id);
   list.innerHTML = sorted.map(matchRowHtml).join("");
 
+  list.querySelectorAll("[data-edit]").forEach((el) => {
+    el.addEventListener("click", () => editMatch(Number(el.dataset.edit)));
+  });
   list.querySelectorAll("[data-delete]").forEach((el) => {
     el.addEventListener("click", () => deleteMatch(Number(el.dataset.delete)));
   });
