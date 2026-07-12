@@ -17,22 +17,9 @@ Favicon made by [Candy](https://github.com/codingkatty)!
 5. `cp .env.example .env` and fill in `HCB_OAUTH_CLIENT_ID` / `HCB_OAUTH_CLIENT_SECRET`.
 6. `bin/dev`, then open <http://localhost:3000> and log in with HCB.
 
-## Secrets: where each thing lives
+## Secrets
 
-| Secret | Development | Production (Kamal) |
-|---|---|---|
-| HCB OAuth client id/secret | `.env` (gitignored; loaded by dotenv-rails) | `.kamal/secrets` → `env.secret` in `config/deploy.yml` |
-| Active Record encryption keys | `config/credentials.yml.enc` (via `config/master.key`, gitignored) | same file, unlocked by `RAILS_MASTER_KEY` from `.kamal/secrets` |
-| Database password | not needed (local socket auth) | `STEELYARD_DATABASE_PASSWORD`, exported in the deploying shell |
-
-`.env` is never used in production — Kamal 2 injects env vars into the container from
-`.kamal/secrets`, which is committed but only ever holds *references* (shell vars, `$(cat ...)`,
-password-manager lookups), never raw values. The OAuth id/secret references in it read from your
-local `.env` at deploy time, so there's exactly one place to put them.
-
-Before first deploy: set real values for `image:`, `servers:`, `proxy.host:`, and
-`HCB_OAUTH_REDIRECT_URI` in `config/deploy.yml` (the redirect URI must also be registered on the
-HCB OAuth app), and export `KAMAL_REGISTRY_PASSWORD` / `STEELYARD_DATABASE_PASSWORD`.
+All the secrets should be theoretically stored in `.env` (I think). An example should be in `.env.example` (theoretically). To run with production credentials, use `.env.production`.
 
 ## Tests
 
