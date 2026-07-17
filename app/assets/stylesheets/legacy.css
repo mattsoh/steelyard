@@ -51,10 +51,41 @@ header#stats {
 
 main {
   display: grid;
-  grid-template-columns: 1fr 380px 1fr;
+  grid-template-columns: 1fr 6px var(--tray-width, 380px) 6px 1fr;
   gap: 12px;
   padding: 16px 20px;
   align-items: start;
+}
+
+.col-resizer {
+  width: 6px;
+  align-self: stretch;
+  cursor: col-resize;
+  position: relative;
+  /* Desktop-only affordance: on touch there's no hover to reveal it and no
+     fine-pointer precision to drag a 6px handle, so it's just dead space
+     that gets in the way of tapping nearby content. */
+  display: block;
+}
+
+.col-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--border);
+}
+
+.col-resizer:hover::after,
+.col-resizer.dragging::after {
+  background: var(--in-color);
+}
+
+@media (pointer: coarse) {
+  .col-resizer { display: none; }
 }
 
 .panel {
@@ -641,6 +672,10 @@ tr.zero-point { background: #fff8c5; }
     grid-template-columns: 1fr 1fr;
     padding: 12px;
     gap: 16px;
+  }
+
+  .col-resizer {
+    display: none;
   }
 
   .panel {

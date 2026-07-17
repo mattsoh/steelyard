@@ -839,4 +839,54 @@ document.getElementById("search-outgoing-before").addEventListener("input", rend
 document.getElementById("sort-incoming").addEventListener("change", renderLists);
 document.getElementById("sort-outgoing").addEventListener("change", renderLists);
 
+// Lets the "Current match" column be resized by dragging the handles beside
+// it, but only where dragging a 6px handle is actually practical: a fine
+// pointer (mouse/trackpad) on a wide-enough viewport that the three-column
+// layout is in play (below 1100px the layout collapses to two columns).
+const TRAY_WIDTH_STORAGE_KEY = "steelyard.trayWidth";
+const TRAY_WIDTH_MIN = 300;
+const TRAY_WIDTH_MAX = 600;
+
+function applyTrayWidth(px) {
+  document.querySelector("main").style.setProperty("--tray-width", `${px}px`);
+}
+
+function wireColumnResizer(handle, side) {
+  handle.addEventListener("pointerdown", (e) => {
+    if (!window.matchMedia("(pointer: fine)").matches) return;
+    if (window.matchMedia("(max-width: 1100px)").matches) return;
+    e.preventDefault();
+
+    const startX = e.clientX;
+    const startWidth = document.getElementById("panel-tray").getBoundingClientRect().width;
+    handle.classList.add("dragging");
+    handle.setPointerCapture(e.pointerId);
+
+    function onMove(ev) {
+      const delta = ev.clientX - startX;
+      const signedDelta = side === "left" ? -delta : delta;
+      applyTrayWidth(Math.min(TRAY_WIDTH_MAX, Math.max(TRAY_WIDTH_MIN, startWidth + signedDelta)));
+    }
+
+    function onUp() {
+      handle.classList.remove("dragging");
+      handle.releasePointerCapture(e.pointerId);
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+      const finalWidth = document.getElementById("panel-tray").getBoundingClientRect().width;
+      localStorage.setItem(TRAY_WIDTH_STORAGE_KEY, Math.round(finalWidth));
+    }
+
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+  });
+}
+
+const storedTrayWidth = parseInt(localStorage.getItem(TRAY_WIDTH_STORAGE_KEY), 10);
+if (!Number.isNaN(storedTrayWidth)) {
+  applyTrayWidth(Math.min(TRAY_WIDTH_MAX, Math.max(TRAY_WIDTH_MIN, storedTrayWidth)));
+}
+wireColumnResizer(document.getElementById("resizer-left"), "left");
+wireColumnResizer(document.getElementById("resizer-right"), "right");
+
 loadAll();
