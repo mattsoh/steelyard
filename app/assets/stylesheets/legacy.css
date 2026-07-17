@@ -198,7 +198,7 @@ main {
   user-select: none;
 }
 
-.row .row-info { display: flex; align-items: center; justify-content: center; gap: 4px; }
+.row .row-info { display: flex; align-items: center; justify-content: center; gap: 0; }
 
 .row:hover { background: #f0f6ff; }
 
@@ -418,8 +418,8 @@ button.danger {
   color: #656d76;
   cursor: pointer;
   font-size: 12px;
-  padding: 0 2px;
-  margin-left: 2px;
+  padding: 0 1px;
+  margin-left: 0;
   vertical-align: middle;
   line-height: 1;
 }
@@ -429,8 +429,8 @@ button.danger {
   color: #656d76;
   text-decoration: none;
   font-size: 12px;
-  padding: 0 2px;
-  margin-left: 2px;
+  padding: 0 1px;
+  margin-left: 0;
   vertical-align: middle;
   line-height: 1;
 }
