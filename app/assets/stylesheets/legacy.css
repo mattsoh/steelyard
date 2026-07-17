@@ -63,6 +63,12 @@ main {
   border-radius: 8px;
   display: flex;
   flex-direction: column;
+  /* Without this, a grid/flex item's "automatic minimum size" is based on
+     its content's min-content width, so a panel full of transaction rows
+     refuses to shrink below that — the whole page ends up wider than the
+     screen and forces horizontal scroll instead of the columns resizing
+     with the window. */
+  min-width: 0;
   max-height: 70vh;
 }
 
@@ -168,6 +174,14 @@ main {
   min-width: 0;
 }
 
+.search-date {
+  /* iOS/iPadOS Safari otherwise renders its own oversized native control
+     on top of our border/padding, making an empty date field look like a
+     big blank pill instead of a normal compact input. */
+  -webkit-appearance: none;
+  appearance: none;
+}
+
 .list {
   overflow-y: auto;
 }
@@ -184,7 +198,7 @@ main {
   user-select: none;
 }
 
-.row .row-info { text-align: center; }
+.row .row-info { display: flex; align-items: center; justify-content: center; gap: 4px; }
 
 .row:hover { background: #f0f6ff; }
 
@@ -224,7 +238,7 @@ main {
 
 .hidden { display: none !important; }
 
-.tray-body { padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+.tray-body { padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 
 .tray-editing-banner {
   background: #fff8c5;
@@ -616,8 +630,13 @@ tr.zero-point { background: #fff8c5; }
 /* ---- Responsive / touch (tablet & phone) ---- */
 
 @media (max-width: 1100px) {
+  /* Two-up (incoming | outgoing) rather than a full single-column stack —
+     narrowing a laptop window a bit shouldn't force scrolling past both
+     lists just to reach the match tray. The tray itself spans both
+     columns and sits on top instead (see order/grid-column below). True
+     phones fall back to a single column at 640px, further down. */
   main {
-    grid-template-columns: 1fr;
+    grid-template-columns: 1fr 1fr;
     padding: 12px;
     gap: 16px;
   }
@@ -631,6 +650,7 @@ tr.zero-point { background: #fff8c5; }
   }
 
   .panel.tray {
+    grid-column: 1 / -1;
     position: sticky;
     top: 0;
     z-index: 20;
@@ -728,6 +748,10 @@ tr.zero-point { background: #fff8c5; }
 @media (max-width: 640px) {
   body { font-size: 15px; }
 
+  main {
+    grid-template-columns: 1fr;
+  }
+
   header#stats {
     position: static;
     gap: 10px 16px;
@@ -824,6 +848,17 @@ tr.zero-point { background: #fff8c5; }
   .search {
     padding-top: 8px;
     padding-bottom: 8px;
+  }
+}
+
+/* Above 640px, .row still uses the 4-column desktop layout (the 2-line
+   card rebuild only kicks in at 640px and below) — but on a touchscreen
+   (iPad, touch laptop) its two icons still get forced to 44px each by the
+   rule above, which no longer fit in the original 40px-wide info column
+   and wrap onto their own line. Give that column enough room. */
+@media (pointer: coarse) and (min-width: 641px) {
+  .row {
+    grid-template-columns: 78px 1fr 90px 96px;
   }
 }
 
