@@ -532,7 +532,19 @@ button.danger {
 }
 .modal-field .field-value { white-space: pre-wrap; word-break: break-word; }
 
-#ledger-main { padding: 16px 20px; }
+/* The base `main` rule sets up a 5-column grid sized for the matcher page's
+   panels + resize handles. The ledger page only has one child (#panel-ledger),
+   so without overriding display/columns here it collapses into just the
+   first (1fr) track instead of using the page width. */
+#ledger-main {
+  display: block;
+  max-width: 1400px;
+  margin: 0 auto;
+  /* No padding override here on purpose: as an id selector it would beat
+     the responsive `main { padding: ... }` rules at every breakpoint
+     (id specificity wins regardless of media query), freezing the ledger
+     page at the desktop padding even on phones. */
+}
 
 #panel-ledger { max-height: none; }
 
