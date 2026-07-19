@@ -49,7 +49,13 @@ header#stats {
 .stat .label { font-size: 11px; color: #656d76; text-transform: uppercase; letter-spacing: 0.03em; }
 .stat .value { font-size: 16px; font-weight: 600; }
 
-main {
+/* Scoped to .legacy-grid (matcher + ledger pages) rather than the bare
+   `main` element -- this stylesheet is bundled site-wide via the :app
+   asset alias, so an unscoped `main {}` rule was also hijacking the
+   layout of any other page whose <main> happens to have unrelated
+   content, like organizations/index's disclaimer text getting squeezed
+   into a 6px grid track. */
+.legacy-grid {
   display: grid;
   grid-template-columns: 1fr 6px var(--tray-width, 380px) 6px 1fr;
   gap: 12px;
@@ -87,6 +93,21 @@ main {
 @media (pointer: coarse) {
   .col-resizer { display: none; }
 }
+
+/* Explicit placement rather than relying on source-order auto-placement:
+   hiding .col-resizer on touch (above) removes it from the grid's item
+   list entirely, which would otherwise shift #panel-tray and
+   #panel-outgoing left to fill the gap -- collapsing the tray into the
+   6px resizer track (near-zero width) on iPad and other coarse-pointer
+   devices at desktop-sized viewports. */
+#panel-incoming { grid-column: 1; }
+/* .panel.tray (not #panel-tray) so it stays equal-specificity with, and
+   gets properly overridden by, the .panel.tray { grid-column: 1 / -1 }
+   full-span rule in the tablet/mobile media queries below -- an id
+   selector here would win over that class rule regardless of media
+   query and break the full-span layout on narrow screens. */
+.panel.tray { grid-column: 3; }
+#panel-outgoing { grid-column: 5; }
 
 .panel {
   background: #fff;
@@ -680,7 +701,7 @@ tr.zero-point { background: #fff8c5; }
      lists just to reach the match tray. The tray itself spans both
      columns and sits on top instead (see order/grid-column below). True
      phones fall back to a single column at 640px, further down. */
-  main {
+  .legacy-grid {
     grid-template-columns: 1fr 1fr;
     padding: 12px;
     gap: 16px;
@@ -696,6 +717,14 @@ tr.zero-point { background: #fff8c5; }
 
   .list {
     max-height: 50vh;
+  }
+
+  #panel-incoming {
+    grid-column: 1;
+  }
+
+  #panel-outgoing {
+    grid-column: 2;
   }
 
   .panel.tray {
@@ -797,8 +826,13 @@ tr.zero-point { background: #fff8c5; }
 @media (max-width: 640px) {
   body { font-size: 15px; }
 
-  main {
+  .legacy-grid {
     grid-template-columns: 1fr;
+  }
+
+  #panel-incoming,
+  #panel-outgoing {
+    grid-column: 1;
   }
 
   header#stats {
