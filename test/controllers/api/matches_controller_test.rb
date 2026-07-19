@@ -15,13 +15,13 @@ class Api::MatchesControllerTest < ActionController::TestCase
     assert_redirected_to login_path
   end
 
-  test "a non-member is forbidden" do
+  test "a non-member gets the same not-found response as a nonexistent org" do
     Hcb::Client.stub :new, @fake_client do
       stub_membership(nil) do
         get :index, params: { organization_id: "org_1" }
       end
     end
-    assert_response :forbidden
+    assert_response :not_found
   end
 
   test "a reader can list matches but cannot create one" do

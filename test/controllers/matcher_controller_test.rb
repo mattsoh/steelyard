@@ -19,11 +19,11 @@ class MatcherControllerTest < ActionController::TestCase
     assert_includes response.body, "Loading transactions"
   end
 
-  test "a non-member is forbidden" do
+  test "a non-member gets the same not-found response as a nonexistent org" do
     stub_membership(nil) do
       get :show, params: { organization_id: "org_1" }
     end
-    assert_response :forbidden
+    assert_response :not_found
   end
 
   test "unauthenticated visitors are redirected to login" do
