@@ -77,5 +77,3 @@ group :test do
   # Minitest 6 split Mock/Object#stub out of core; restores it for test doubles
   gem "minitest-mock"
 end
-
-
