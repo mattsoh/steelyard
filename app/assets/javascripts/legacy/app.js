@@ -285,11 +285,13 @@ function hcbCodeInlineHtml(t) {
 
 // Memo search boxes match either the memo text or the HCB code, so pasting
 // in a code from HCB's own UI finds the transaction without having to know
-// its memo.
+// its memo. Checked both ways against the code: query-in-code for a partial
+// code, and code-in-query so pasting the row's *full HCB URL* (which
+// contains the code as a substring, not the other way around) still finds it.
 function memoOrCodeMatches(t, query) {
   if (!query) return true;
   const code = hcbCode(t);
-  return t.memo.toLowerCase().includes(query) || (!!code && code.toLowerCase().includes(query));
+  return t.memo.toLowerCase().includes(query) || (!!code && (code.toLowerCase().includes(query) || query.includes(code.toLowerCase())));
 }
 
 function matchesRowHtml(t, extraClass) {

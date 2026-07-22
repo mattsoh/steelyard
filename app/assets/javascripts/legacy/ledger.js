@@ -49,10 +49,13 @@ function hcbCodeHtml(r) {
 
 // Memo search matches either the memo text or the HCB code, so pasting in a
 // code from HCB's own UI finds the row without having to know its memo.
+// Checked both ways against the code: query-in-code for a partial code, and
+// code-in-query so pasting the row's *full HCB URL* (which contains the code
+// as a substring, not the other way around) still finds it.
 function memoOrCodeMatches(r, query) {
   if (!query) return true;
   const code = hcbCode(r);
-  return r.memo.toLowerCase().includes(query) || (!!code && code.toLowerCase().includes(query));
+  return r.memo.toLowerCase().includes(query) || (!!code && (code.toLowerCase().includes(query) || query.includes(code.toLowerCase())));
 }
 
 async function load() {

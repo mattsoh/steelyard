@@ -6,7 +6,19 @@ class ApplicationController < ActionController::Base
 
   rescue_from Hcb::TokenExpiredError do
     reset_session
-    redirect_to root_path, alert: "Your session with HCB expired. Please log in again."
+    # A `fetch()` call (comments, matches, ledger data, etc.) follows a
+    # redirect transparently and silently receives the login page's HTML as
+    # a 200 -- the caller's `res.ok` is true and `res.json()` just throws,
+    # surfacing as a generic "could not load" rather than a re-login prompt.
+    # Keying off the controller namespace (rather than the request's Accept
+    # header, which the frontend's plain `fetch()` calls don't set) so every
+    # Api::* endpoint reliably gets a real 401 the caller can detect, while
+    # actual page controllers still get the redirect.
+    if controller_path.start_with?("api/")
+      render json: { error: "reauth_required" }, status: :unauthorized
+    else
+      redirect_to root_path, alert: "Your session with HCB expired. Please log in again."
+    end
   end
 
   rescue_from StandardError, with: :report_unexpected_error

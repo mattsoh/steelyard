@@ -6,6 +6,24 @@ function escapeHtml(s) {
 
 const fmtDetail = (n) => (n < 0 ? "-$" : "$") + Math.abs(n).toFixed(2);
 
+// A 401 with this shape means the session's HCB token needs a full
+// re-login (expired, or missing a scope this app added after the user
+// last authorized) -- unlike a real page navigation, `fetch()` can't be
+// redirected to the login page by the server, so without this callers
+// just see a broken response and report a misleading "could not load".
+// Loaded first in every legacy page's layout, so it's available globally.
+async function handledReauthRequired(res) {
+  if (res.status !== 401) return false;
+  try {
+    const data = await res.clone().json();
+    if (data.error !== "reauth_required") return false;
+  } catch (e) {
+    return false;
+  }
+  window.location.href = "/";
+  return true;
+}
+
 function commentsFieldHtml(html) {
   return `
     <div class="modal-field" id="detail-comments-field">
@@ -74,6 +92,7 @@ function showDetailsModal(t) {
 async function loadComments(transactionId) {
   try {
     const res = await fetch(`${API_BASE}/api/transactions/${transactionId}/comments`);
+    if (await handledReauthRequired(res)) return;
     if (!res.ok) throw new Error("bad response");
     const data = await res.json();
     const valueEl = document.getElementById("detail-comments-value");
