@@ -23,6 +23,7 @@ RUN apt-get update -qq && \
 ENV RAILS_ENV="production" \
     BUNDLE_DEPLOYMENT="1" \
     BUNDLE_PATH="/usr/local/bundle" \
+    LD_PRELOAD="libjemalloc.so.2" \
     BUNDLE_WITHOUT="development"
 
 # Throw-away build stage to reduce size of final image
