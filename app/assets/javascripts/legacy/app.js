@@ -3,6 +3,10 @@ const API_BASE = `/organizations/${window.HCB_ORGANIZATION_ID}`;
 let allTransactions = [];
 let matches = [];
 let byId = new Map();
+// False for the whole drain (including while pages are still streaming in),
+// so an org whose transactions/matches just haven't landed yet doesn't get
+// mistaken by renderLists() for one that's genuinely fully unmatched-empty.
+let transactionsLoaded = false;
 
 let zeroBalanceOptions = [];
 let zeroBalanceSelectedId = null;
@@ -180,6 +184,7 @@ async function loadAll() {
   showListsMessage(LOADING_HTML);
   allTransactions = [];
   byId = new Map();
+  transactionsLoaded = false;
   let txData, matchData;
   try {
     const matchesPromise = fetch(`${API_BASE}/api/matches`).then((r) => {
@@ -231,6 +236,7 @@ async function loadAll() {
   allTransactions = txData.transactions;
   byId = new Map(allTransactions.map((t) => [t.id, t]));
   matches = matchData.matches;
+  transactionsLoaded = true;
 
   zeroBalanceOptions = txData.zero_balance_options || [];
   zeroBalanceSelectedId = txData.zero_balance_selected_id || null;
@@ -383,15 +389,21 @@ function renderLists() {
   currentIncomingOrder = incoming.map((t) => t.id);
   currentOutgoingOrder = outgoing.map((t) => t.id);
 
+  // While the drain is still in progress (including mid-stream, before
+  // transactionsLoaded flips true), an empty filtered list just means the
+  // data hasn't arrived yet -- showing "Nothing unmatched" there would claim
+  // the org has no unmatched transactions when it just hasn't loaded them.
+  const emptyHtml = transactionsLoaded ? `<div class="empty-msg">Nothing unmatched 🎉</div>` : LOADING_HTML;
+
   const inList = document.getElementById("list-incoming");
   inList.innerHTML = incoming.length
     ? incoming.map((t) => matchesRowHtml(t, selectedIncomingIds.includes(t.id) ? "active" : "")).join("")
-    : `<div class="empty-msg">Nothing unmatched 🎉</div>`;
+    : emptyHtml;
 
   const outList = document.getElementById("list-outgoing");
   outList.innerHTML = outgoing.length
     ? outgoing.map((t) => matchesRowHtml(t, selectedOutgoingIds.includes(t.id) ? "selected" : "")).join("")
-    : `<div class="empty-msg">Nothing unmatched 🎉</div>`;
+    : emptyHtml;
 
   inList.querySelectorAll(".row").forEach((el) => {
     el.addEventListener("click", (e) => onIncomingClick(el.dataset.id, e));
