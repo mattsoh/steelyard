@@ -46,6 +46,7 @@ async function loadPagesStreaming(pageUrl, onPage) {
   const streamId = crypto.randomUUID();
   let after = null;
   let allRows = [];
+  let totalCount;
 
   while (true) {
     const url = new URL(pageUrl, window.location.origin);
@@ -56,11 +57,17 @@ async function loadPagesStreaming(pageUrl, onPage) {
     if (!res.ok) throw new Error("bad response");
     const data = await res.json();
 
-    allRows = allRows.concat(data.rows);
-    writeCachedTransactionRows(allRows, data.total_count);
+    allRows.push(...data.rows);
+    totalCount = data.total_count;
     onPage(data.rows, data.total_count);
 
     if (!data.has_more) break;
     after = data.next_after;
   }
+
+  // Written once the drain is fully done, not per-page -- per-page would mean
+  // JSON.stringify-ing the whole (ever-growing) row set on every round trip,
+  // and would also leave a *partial* drain cached as if it were complete for
+  // any load that gets interrupted before `has_more` goes false.
+  writeCachedTransactionRows(allRows, totalCount);
 }

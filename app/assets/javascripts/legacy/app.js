@@ -209,7 +209,7 @@ async function loadAll() {
     // authoritative one.
     await loadPagesStreaming(`${API_BASE}/api/transactions/page`, (rows, totalCount) => {
       allTransactions.push(...rows);
-      byId = new Map(allTransactions.map((t) => [t.id, t]));
+      for (const t of rows) byId.set(t.id, t);
       updateLoadProgress(totalCount);
       render();
     });
