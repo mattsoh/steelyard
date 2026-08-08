@@ -1,0 +1,23 @@
+<%# All icons here are built from the two SVGs by script/generate_icons.sh --
+    regenerate rather than hand-editing the PNGs.
+
+    Order matters: Firefox uses the *last* <link rel="icon"> it can render, so
+    the two theme-aware SVGs come after the raster fallbacks. Chrome prefers the
+    SVG regardless; Safari and older browsers ignore it and take the .ico/PNGs. %>
+<%= favicon_link_tag "/favicon.ico", rel: "icon", sizes: "16x16 32x32 48x48" %>
+<%= favicon_link_tag "favicon-16.png", rel: "icon", type: "image/png", sizes: "16x16" %>
+<%= favicon_link_tag "favicon-32.png", rel: "icon", type: "image/png", sizes: "32x32" %>
+<%= favicon_link_tag "favicon-48.png", rel: "icon", type: "image/png", sizes: "48x48" %>
+<%= favicon_link_tag "favicon-96.png", rel: "icon", type: "image/png", sizes: "96x96" %>
+<%= favicon_link_tag "favicon-light.svg", rel: "icon", type: "image/svg+xml", media: "(prefers-color-scheme: light)" %>
+<%= favicon_link_tag "favicon-dark.svg", rel: "icon", type: "image/svg+xml", media: "(prefers-color-scheme: dark)" %>
+
+<%# iOS ignores the SVGs and the manifest; it wants one opaque 180x180 PNG. %>
+<%= favicon_link_tag "apple-touch-icon.png", rel: "apple-touch-icon", type: "image/png", sizes: "180x180" %>
+
+<%# Android/Chrome pull their home-screen icons (192/512, plain + maskable)
+    from the manifest, not from <link rel="icon">. %>
+<%= tag.link rel: "manifest", href: pwa_manifest_path(format: :json) %>
+
+<%= tag.meta name: "theme-color", content: "#ED344F", media: "(prefers-color-scheme: light)" %>
+<%= tag.meta name: "theme-color", content: "#19293B", media: "(prefers-color-scheme: dark)" %>

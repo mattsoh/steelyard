@@ -1,0 +1,24 @@
+/* Chrome shared by every layout. Loaded site-wide by the `:app` alias on the
+   Tailwind layout, and explicitly by the legacy layout (which deliberately
+   skips Tailwind). Keep page-specific rules out of here. */
+
+#site-logo-link {
+  position: fixed;
+  top: 12px;
+  left: 16px;
+  z-index: 50;
+  display: block;
+  line-height: 0;
+  border-radius: 9px;
+}
+
+#site-logo-link:focus-visible {
+  outline: 2px solid #ed344f;
+  outline-offset: 3px;
+}
+
+#site-logo {
+  display: block;
+  width: 32px;
+  height: 32px;
+}

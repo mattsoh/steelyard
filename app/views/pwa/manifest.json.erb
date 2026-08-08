@@ -1,13 +1,28 @@
 {
   "name": "Steelyard",
+  "short_name": "Steelyard",
+  "description": "Match incoming and outgoing transactions across your HCB organizations.",
   "icons": [
     {
-      "src": "/icon.png",
+      "src": "<%= asset_path("icon-192.png") %>",
       "type": "image/png",
-      "sizes": "512x512"
+      "sizes": "192x192",
+      "purpose": "any"
     },
     {
-      "src": "/icon.png",
+      "src": "<%= asset_path("icon-512.png") %>",
+      "type": "image/png",
+      "sizes": "512x512",
+      "purpose": "any"
+    },
+    {
+      "src": "<%= asset_path("icon-maskable-192.png") %>",
+      "type": "image/png",
+      "sizes": "192x192",
+      "purpose": "maskable"
+    },
+    {
+      "src": "<%= asset_path("icon-maskable-512.png") %>",
       "type": "image/png",
       "sizes": "512x512",
       "purpose": "maskable"
@@ -16,7 +31,6 @@
   "start_url": "/",
   "display": "standalone",
   "scope": "/",
-  "description": "Steelyard.",
-  "theme_color": "red",
-  "background_color": "red"
+  "theme_color": "#ED344F",
+  "background_color": "#F6F8FA"
 }

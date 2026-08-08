@@ -1,0 +1,9 @@
+<%# Fixed top-left home button. Rendered by every layout, so it is present on
+    the Tailwind pages and the legacy matcher/ledger pages alike. Styles live in
+    app/assets/stylesheets/site.css. %>
+<%= link_to root_path, id: "site-logo-link" do %>
+  <picture>
+    <source srcset="<%= asset_path("favicon-dark.svg") %>" media="(prefers-color-scheme: dark)">
+    <%= image_tag "favicon-light.svg", id: "site-logo", alt: "Steelyard", width: 32, height: 32 %>
+  </picture>
+<% end %>

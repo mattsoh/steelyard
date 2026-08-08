@@ -10,21 +10,6 @@
 
 * { box-sizing: border-box; }
 
-#site-logo-link {
-  position: fixed;
-  top: 16px;
-  left: 16px;
-  z-index: 50;
-  display: block;
-  line-height: 0;
-}
-
-#site-logo {
-  display: block;
-  width: 32px;
-  height: 32px;
-}
-
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -37,7 +22,9 @@ header#stats {
   display: flex;
   gap: 24px;
   flex-wrap: wrap;
-  padding: 12px 20px;
+  /* Left padding reserves the gutter that the fixed #site-logo-link sits in
+     (16px offset + 32px logo + 20px gap), so the first stat clears it. */
+  padding: 12px 20px 12px 68px;
   background: #fff;
   border-bottom: 1px solid var(--border);
   position: sticky;
@@ -808,7 +795,7 @@ tr.zero-point { background: #fff8c5; }
   header#stats {
     position: static;
     gap: 12px 20px;
-    padding: 10px 12px;
+    padding: 10px 12px 10px 56px;
   }
 
   .match-row {
