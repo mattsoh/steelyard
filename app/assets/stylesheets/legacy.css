@@ -254,11 +254,42 @@ header#stats {
 .row .memo-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row .amount { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
 
+/* Rendered as a <button> (clicking copies the code), so the default button
+   chrome is stripped back to bare text -- it should still read as part of the
+   row, not as a control competing with the ⓘ and ↗ buttons beside it. */
 .hcb-code {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 0;
   color: #8b949e;
   font-size: 11px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  line-height: inherit;
+  text-align: left;
+  vertical-align: baseline;
+  cursor: pointer;
+  transition: color 0.1s ease-in-out;
+  /* Browsers put user-select:none on <button>. The code was selectable text
+     before it became one, so put that back -- dragging across it still works,
+     and it's what lets the copy failure path leave the code highlighted. */
+  -webkit-user-select: text;
+  user-select: text;
 }
+.hcb-code:hover { color: var(--in-color); text-decoration: underline; }
+.hcb-code:focus-visible {
+  outline: 2px solid var(--in-color);
+  outline-offset: 1px;
+  border-radius: 3px;
+}
+
+/* Confirmation is a suffix rather than replacement text so the code stays
+   readable and the row doesn't reflow out from under the pointer. */
+.hcb-code.copied { color: var(--green); }
+.hcb-code.copied::after { content: " ✓"; }
+.hcb-code.copy-failed { color: var(--red); }
+.hcb-code.copy-failed::after { content: " ✗"; }
+
 .hcb-code-inline { margin-left: 2px; }
 
 .row.in .amount { color: var(--in-color); }

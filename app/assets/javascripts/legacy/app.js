@@ -310,16 +310,21 @@ function HCBLinkHtml(t) {
   return `<a class="hcb-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" title="View on HCB">↗</a>`;
 }
 
+// A <button> rather than plain text: clicking the code copies it, so it needs
+// to be reachable by keyboard and announced as an action. wireRowControls does
+// the copying; legacy.css strips the default button chrome back to bare text.
 function hcbCodeHtml(t) {
   const code = hcbCode(t);
-  return code ? `<div class="hcb-code" title="HCB code">${escapeHtml(code)}</div>` : "";
+  if (!code) return "";
+  return `<button type="button" class="hcb-code" data-copy="${escapeHtml(code)}" title="Copy HCB code">${escapeHtml(code)}</button>`;
 }
 
 // Same as hcbCodeHtml but for single-line contexts (tray items, match rows)
 // where a block-level line would break the layout.
 function hcbCodeInlineHtml(t) {
   const code = hcbCode(t);
-  return code ? ` <span class="hcb-code hcb-code-inline" title="HCB code">${escapeHtml(code)}</span>` : "";
+  if (!code) return "";
+  return ` <button type="button" class="hcb-code hcb-code-inline" data-copy="${escapeHtml(code)}" title="Copy HCB code">${escapeHtml(code)}</button>`;
 }
 
 // Memo search boxes match either the memo text or the HCB code, so pasting
@@ -411,8 +416,8 @@ function renderLists() {
   outList.querySelectorAll(".row").forEach((el) => {
     el.addEventListener("click", (e) => onOutgoingClick(el.dataset.id, e));
   });
-  wireDetailButtons(inList);
-  wireDetailButtons(outList);
+  wireRowControls(inList);
+  wireRowControls(outList);
 
   saveFilterSnapshot();
 }
@@ -545,7 +550,7 @@ function renderTray() {
     document.getElementById("clear-outgoing-all").addEventListener("click", clearOutgoingSelection);
   }
 
-  wireDetailButtons(document.getElementById("tray-body"));
+  wireRowControls(document.getElementById("tray-body"));
 
   const incomingAmount = selectedIncomingIds.reduce((s, id) => s + byId.get(id).amount, 0);
   const outSum = selectedOutgoingIds.reduce((s, id) => s + byId.get(id).amount, 0);
@@ -745,7 +750,7 @@ function renderMatchGroup(group, listId, countId, emptyMsg) {
   list.querySelectorAll("[data-delete]").forEach((el) => {
     el.addEventListener("click", () => deleteMatch(Number(el.dataset.delete)));
   });
-  wireDetailButtons(list);
+  wireRowControls(list);
 }
 
 function renderMatches() {

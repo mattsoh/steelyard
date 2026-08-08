@@ -81,9 +81,12 @@ function hcbCode(r) {
   return id.startsWith("txn_") ? id.slice(4) : null;
 }
 
+// A <button> rather than plain text: clicking the code copies it. See app.js's
+// hcbCodeHtml -- wireRowControls (details.js) does the copying for both pages.
 function hcbCodeHtml(r) {
   const code = hcbCode(r);
-  return code ? ` <span class="hcb-code hcb-code-inline" title="HCB code">${escapeHtml(code)}</span>` : "";
+  if (!code) return "";
+  return ` <button type="button" class="hcb-code hcb-code-inline" data-copy="${escapeHtml(code)}" title="Copy HCB code">${escapeHtml(code)}</button>`;
 }
 
 function hcbTransactionUrl(r) {
@@ -195,6 +198,11 @@ function renderProvisional(totalCount) {
       <td>${escapeHtml(r.category_label)}</td>
     </tr>`;
   }).join("");
+
+  // These rows are replaced wholesale by render() once the drain finishes, but
+  // they're on screen and clickable for as long as it takes, so the codes in
+  // them have to copy too.
+  wireRowControls(body);
 }
 
 function applyMatches(matches) {
@@ -251,9 +259,7 @@ function render() {
   body.querySelectorAll("tr").forEach((tr, idx) => {
     tr.addEventListener("click", () => showDetailsModal(rows[idx]));
   });
-  body.querySelectorAll(".hcb-link").forEach((el) => {
-    el.addEventListener("click", (e) => e.stopPropagation());
-  });
+  wireRowControls(body);
 
   saveLedgerFilters();
 }

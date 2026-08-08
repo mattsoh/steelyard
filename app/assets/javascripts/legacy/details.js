@@ -121,11 +121,69 @@ function hideDetailsModal() {
   document.getElementById("detail-modal-overlay").classList.add("hidden");
 }
 
-// `byId` is app.js's transaction lookup (the only page that renders
-// .info-icon buttons) -- looking it up here instead of round-tripping the
-// whole transaction through JSON on the button's dataset avoids
-// re-serializing every visible transaction's full object on every render.
-function wireDetailButtons(root) {
+// navigator.clipboard is only defined in a secure context. Production is https
+// and dev is localhost, so that covers both -- but fall back to the deprecated
+// execCommand path anyway, so reaching a dev server over a plain-http LAN
+// address copies rather than silently doing nothing.
+async function copyToClipboard(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (e) {
+      // Permission denied or the document wasn't focused; try the fallback.
+    }
+  }
+
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  // Off-screen rather than display:none -- an unrendered textarea can't be
+  // selected, and a visible one at the top of the page would scroll-jump.
+  ta.style.position = "fixed";
+  ta.style.top = "-9999px";
+  document.body.appendChild(ta);
+  try {
+    ta.select();
+    return document.execCommand("copy");
+  } catch (e) {
+    return false;
+  } finally {
+    ta.remove();
+  }
+}
+
+function selectText(el) {
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+// Flash the outcome on the code itself. The class drives a ✓/✗ in ::after
+// rather than replacing the text, so the code stays readable and the row
+// doesn't reflow underneath the pointer.
+function flashCopyResult(el, ok) {
+  clearTimeout(el.copyFlashTimer);
+  el.classList.remove("copied", "copy-failed");
+  void el.offsetWidth; // restart the transition when the same code is clicked twice
+  el.classList.add(ok ? "copied" : "copy-failed");
+  el.copyFlashTimer = setTimeout(() => {
+    el.classList.remove("copied", "copy-failed");
+  }, 1400);
+}
+
+// Wires the controls every transaction row carries, on both the matcher and
+// the ledger. All three stop propagation because the row itself is clickable
+// -- it toggles selection on the matcher and opens the details modal on the
+// ledger, neither of which should fire when the target was a control.
+//
+// `byId` is app.js's transaction lookup (the only page that renders .info-icon
+// buttons) -- looking it up here instead of round-tripping the whole
+// transaction through JSON on the button's dataset avoids re-serializing every
+// visible transaction's full object on every render.
+function wireRowControls(root) {
   root.querySelectorAll(".info-icon").forEach((el) => {
     el.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -135,6 +193,19 @@ function wireDetailButtons(root) {
   });
   root.querySelectorAll(".hcb-link").forEach((el) => {
     el.addEventListener("click", (e) => e.stopPropagation());
+  });
+  root.querySelectorAll(".hcb-code").forEach((el) => {
+    el.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const code = el.dataset.copy;
+      if (!code) return;
+      const ok = await copyToClipboard(code);
+      // Both clipboard paths refused (they shouldn't outside an exotic
+      // browser/permissions setup). Leave the code selected so the ✗ comes
+      // with something the user can actually act on.
+      if (!ok) selectText(el);
+      flashCopyResult(el, ok);
+    });
   });
 }
 
