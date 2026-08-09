@@ -1,9 +1,19 @@
 require "test_helper"
 
 class Api::TransactionsControllerTest < ActionController::TestCase
+  include ActiveJob::TestHelper
+
   def setup
     @user = User.create!(hcb_user_id: "usr_1", access_token: "a", refresh_token: "b", token_expires_at: 1.hour.from_now)
     session[:user_id] = @user.id
+    # The refresh/sync_status endpoints are all cache reads and writes, which the
+    # test environment's :null_store would silently swallow.
+    @previous_cache = Rails.cache
+    Rails.cache = ActiveSupport::Cache::MemoryStore.new
+  end
+
+  def teardown
+    Rails.cache = @previous_cache
   end
 
   test "returns windowed transactions plus any older ones referenced by an active match" do
@@ -62,5 +72,82 @@ class Api::TransactionsControllerTest < ActionController::TestCase
     assert_equal [ "txn_2", "txn_1" ], body["rows"].map { |t| t["id"] }
     assert_not body["has_more"]
     assert_nil body["next_after"]
+  end
+
+  test "refresh reports fresh, and enqueues nothing, when HCB has nothing new" do
+    fake_client = FakeHcbClient.new(transactions: [
+      { "id" => "txn_1", "date" => "2026-01-01", "memo" => "Donation", "amount_cents" => 5_000 }
+    ])
+    Hcb::OrganizationTransactions.new(fake_client, "org_1").all
+
+    Hcb::Client.stub :new, fake_client do
+      stub_membership("reader") do
+        assert_no_enqueued_jobs(only: WarmOrganizationTransactionsJob) do
+          post :refresh, params: { organization_id: "org_1" }
+        end
+      end
+    end
+
+    assert_response :success
+    body = JSON.parse(response.body)
+    assert_equal "fresh", body["status"]
+    assert_equal 1, body["count"]
+  end
+
+  test "refresh syncs a newly-landed transaction inline so the next index read sees it" do
+    fake_client = FakeHcbClient.new(transactions: [
+      { "id" => "txn_1", "date" => "2026-01-01", "memo" => "Donation", "amount_cents" => 5_000 }
+    ])
+    Hcb::OrganizationTransactions.new(fake_client, "org_1").all
+    fake_client.add_transactions([ { "id" => "txn_2", "date" => "2026-01-02", "memo" => "New grant", "amount_cents" => -5_000 } ])
+
+    Hcb::Client.stub :new, fake_client do
+      stub_membership("reader") do
+        post :refresh, params: { organization_id: "org_1" }
+      end
+    end
+
+    assert_response :success
+    body = JSON.parse(response.body)
+    assert_equal "synced", body["status"]
+    assert_equal 2, body["count"]
+    assert_equal [ "txn_2", "txn_1" ], Hcb::OrganizationTransactions.new(fake_client, "org_1").all.map { |t| t["id"] }
+  end
+
+  test "refresh hands a too-deep sync to the background job instead of doing it inline" do
+    fake_client = FakeHcbClient.new(transactions: [
+      { "id" => "txn_1", "date" => "2026-01-01", "memo" => "Donation", "amount_cents" => 5_000 }
+    ])
+
+    Hcb::Client.stub :new, fake_client do
+      stub_membership("reader") do
+        assert_enqueued_with(job: WarmOrganizationTransactionsJob, args: [ @user.id, "org_1" ]) do
+          post :refresh, params: { organization_id: "org_1" }
+        end
+      end
+    end
+
+    assert_response :success
+    assert_equal "deep", JSON.parse(response.body)["status"]
+  end
+
+  test "sync_status reports the current drain stamp without touching HCB" do
+    fake_client = FakeHcbClient.new(transactions: [
+      { "id" => "txn_1", "date" => "2026-01-01", "memo" => "Donation", "amount_cents" => 5_000 }
+    ])
+    Hcb::OrganizationTransactions.new(fake_client, "org_1").all
+    calls_before = fake_client.transactions_calls
+
+    Hcb::Client.stub :new, fake_client do
+      stub_membership("reader") do
+        get :sync_status, params: { organization_id: "org_1" }
+      end
+    end
+
+    assert_response :success
+    body = JSON.parse(response.body)
+    assert_equal 1, body["count"]
+    assert body["fetched_at"]
+    assert_equal calls_before, fake_client.transactions_calls
   end
 end

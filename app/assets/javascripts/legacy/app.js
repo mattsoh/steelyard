@@ -246,6 +246,99 @@ async function loadAll() {
   render();
 }
 
+// Reloads the authoritative views in place, leaving what's currently rendered
+// alone until the new data is ready -- for picking up a sync that happened
+// while someone was mid-match, where loadAll()'s blank-the-lists-and-restream
+// approach would yank the ground out from under them.
+//
+// Skips the page-streaming path entirely: this only runs right after a
+// successful sync, so the server's drain cache is warm and /api/transactions
+// is one fast request with no HCB round trips behind it. The tray is left
+// untouched (no restoreTraySnapshot) -- whatever the user has selected right
+// now is more current than any snapshot.
+async function reloadInPlace() {
+  let txData, matchData;
+  try {
+    const [txRes, matchRes] = await Promise.all([
+      fetch(`${API_BASE}/api/transactions`),
+      fetch(`${API_BASE}/api/matches`),
+    ]);
+    if (!txRes.ok || !matchRes.ok) throw new Error("bad response");
+    txData = await txRes.json();
+    matchData = await matchRes.json();
+  } catch (e) {
+    return false;
+  }
+
+  allTransactions = txData.transactions;
+  byId = new Map(allTransactions.map((t) => [t.id, t]));
+  transactionsLoaded = true;
+
+  // A match being edited was pulled out of `matches` on purpose (its legs show
+  // as selectable while it's in the tray); re-adding it from the server's list
+  // would make them look used and drop them out of the lists mid-edit.
+  matches = editingMatchId === null ? matchData.matches : matchData.matches.filter((m) => m.id !== editingMatchId);
+
+  // A transaction can leave the working set between loads -- most likely
+  // because someone else moved the cutoff past it. Drop those from the tray
+  // rather than leaving renderTray to dereference an id byId no longer has.
+  const stillLoaded = (id) => byId.has(id);
+  selectedIncomingIds = selectedIncomingIds.filter(stillLoaded);
+  selectedOutgoingIds = selectedOutgoingIds.filter(stillLoaded);
+  if (stashedSelection) {
+    stashedSelection = {
+      incomingIds: (stashedSelection.incomingIds || []).filter(stillLoaded),
+      outgoingIds: (stashedSelection.outgoingIds || []).filter(stillLoaded),
+    };
+  }
+
+  zeroBalanceOptions = txData.zero_balance_options || [];
+  zeroBalanceSelectedId = txData.zero_balance_selected_id || null;
+  renderCutoffSelect();
+  render();
+  return true;
+}
+
+let transactionsRefreshing = false;
+
+function setSyncNote(text) {
+  document.getElementById("sync-note").textContent = text;
+}
+
+// Runs the cheap server-side "anything new on HCB?" check and, if it turns
+// anything up, pulls it in without disturbing what's on screen. `announce`
+// distinguishes the button (which owes the user an answer either way) from the
+// automatic check on load (which should stay silent unless it found something).
+async function refreshTransactions({ announce }) {
+  if (transactionsRefreshing) return;
+  transactionsRefreshing = true;
+  const btn = document.getElementById("btn-refresh-transactions");
+  btn.disabled = true;
+  if (announce) setSyncNote("checking HCB…");
+
+  try {
+    const changed = await syncNewTransactions({
+      onSyncing: () => setSyncNote("new activity found, syncing in the background…"),
+    });
+    if (!changed) {
+      setSyncNote(announce ? "up to date" : "");
+      return;
+    }
+
+    const before = allTransactions.length;
+    setSyncNote("new activity found, updating…");
+    if (!(await reloadInPlace())) {
+      setSyncNote("sync failed — reload the page");
+      return;
+    }
+    const added = allTransactions.length - before;
+    setSyncNote(added > 0 ? `${added} new transaction${added === 1 ? "" : "s"} loaded` : "updated");
+  } finally {
+    transactionsRefreshing = false;
+    btn.disabled = false;
+  }
+}
+
 function usedIds() {
   const used = new Set();
   for (const m of matches) {
@@ -882,6 +975,7 @@ document.getElementById("cutoff-modal-overlay").addEventListener("click", (e) =>
 document.getElementById("btn-confirm").addEventListener("click", confirmMatch);
 document.getElementById("btn-cancel").addEventListener("click", cancelMatch);
 document.getElementById("btn-refresh-matches").addEventListener("click", refreshMatches);
+document.getElementById("btn-refresh-transactions").addEventListener("click", () => refreshTransactions({ announce: true }));
 // Search/amount/date fields fire on every keystroke -- without debouncing,
 // each one rebuilds both full row lists (and re-renders every visible row)
 // once per character typed. Sort selects fire once per choice, so those stay
@@ -954,4 +1048,10 @@ wireColumnResizer(document.getElementById("resizer-left"), "left");
 wireColumnResizer(document.getElementById("resizer-right"), "right");
 
 restoreFilterSnapshot();
-loadAll();
+// Every load ends with a check for HCB activity that landed since whatever
+// cache (client-side rows, server-side drain) served this page -- otherwise a
+// transaction made minutes ago stays invisible for the rest of the drain's TTL
+// no matter how many times someone reloads. Not awaited: the page is already
+// rendered and usable by then, and the check quietly folds anything it finds in
+// on top.
+loadAll().then(() => refreshTransactions({ announce: false }));

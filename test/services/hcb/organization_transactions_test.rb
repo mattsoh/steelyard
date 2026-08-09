@@ -217,6 +217,107 @@ class Hcb::OrganizationTransactionsTest < ActiveSupport::TestCase
     end
   end
 
+  test "sync_head! reports fresh from a single peek when nothing has landed since the drain" do
+    transactions = (1..250).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
+    client = FakeHcbClient.new(transactions: transactions)
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+    service.all
+
+    calls_before = client.transactions_calls
+    assert_equal :fresh, service.sync_head!
+    assert_equal 1, client.transactions_calls - calls_before
+  end
+
+  test "sync_head! splices newly-landed transactions into the cache from a single peek" do
+    old_transactions = (1..500).map { |n| { "id" => "txn_old_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
+    client = FakeHcbClient.new(transactions: old_transactions)
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+    service.all
+
+    client.add_transactions([ { "id" => "txn_new_1", "date" => "2026-02-01", "amount_cents" => 1 } ])
+
+    calls_before = client.transactions_calls
+    assert_equal :synced, service.sync_head!
+    # The whole point: one request, versus the 3 an incremental redrain needs
+    # just to cover SAFETY_OVERLAP before it can look for a rejoin point.
+    assert_equal 1, client.transactions_calls - calls_before
+
+    cached = Hcb::OrganizationTransactions.new(client, "org_1").all
+    assert_equal 501, cached.size
+    assert_equal "txn_new_1", cached.first["id"]
+  end
+
+  test "sync_head! picks up an in-place change to a transaction the drain already cached" do
+    client = FakeHcbClient.new(transactions: [
+      { "id" => "txn_2", "date" => "2026-01-02", "amount_cents" => 200 },
+      { "id" => "txn_1", "date" => "2026-01-01", "amount_cents" => 100 }
+    ])
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+    service.all
+
+    client.update_transaction("txn_2", "declined" => true)
+
+    assert_equal :synced, service.sync_head!
+    cached = Hcb::OrganizationTransactions.new(client, "org_1").all
+    assert_equal [ "txn_2", "txn_1" ], cached.map { |t| t["id"] }
+    assert_equal true, cached.first["declined"]
+  end
+
+  test "sync_head! defers to a full redrain when more landed than one peek can account for" do
+    old_transactions = (1..500).map { |n| { "id" => "txn_old_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
+    client = FakeHcbClient.new(transactions: old_transactions)
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+    service.all
+
+    new_transactions = (1..150).map { |n| { "id" => "txn_new_#{n}", "date" => "2026-02-01", "amount_cents" => n } }.reverse
+    client.add_transactions(new_transactions)
+
+    assert_equal :deep, service.sync_head!
+  end
+
+  test "sync_head! defers to a full redrain without peeking when there is no cache to compare against" do
+    client = FakeHcbClient.new(transactions: [ { "id" => "txn_1", "date" => "2026-01-01", "amount_cents" => 100 } ])
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+
+    assert_equal :deep, service.sync_head!
+    assert_equal 0, client.transactions_calls
+  end
+
+  test "sync_head! leaves the cache alone when it reports fresh" do
+    client = FakeHcbClient.new(transactions: [ { "id" => "txn_1", "date" => "2026-01-01", "amount_cents" => 100 } ])
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+    service.all
+    stamp_before = service.sync_state
+
+    travel(1.minute) do
+      assert_equal :fresh, Hcb::OrganizationTransactions.new(client, "org_1").sync_head!
+      assert_equal stamp_before, Hcb::OrganizationTransactions.new(client, "org_1").sync_state
+    end
+  end
+
+  test "sync_state stamps every published result so a poller can tell when the drain moved" do
+    client = FakeHcbClient.new(transactions: [ { "id" => "txn_1", "date" => "2026-01-01", "amount_cents" => 100 } ])
+    Hcb::OrganizationTransactions.new(client, "org_1").all
+
+    before = Hcb::OrganizationTransactions.new(client, "org_1").sync_state
+    assert_equal 1, before[:count]
+    assert before[:fetched_at]
+
+    client.add_transactions([ { "id" => "txn_2", "date" => "2026-01-02", "amount_cents" => 200 } ])
+
+    travel(1.minute) do
+      assert_equal :synced, Hcb::OrganizationTransactions.new(client, "org_1").sync_head!
+      after = Hcb::OrganizationTransactions.new(client, "org_1").sync_state
+      assert_equal 2, after[:count]
+      assert_not_equal before[:fetched_at], after[:fetched_at]
+    end
+  end
+
+  test "sync_state reports nothing cached before any drain has run" do
+    client = FakeHcbClient.new(transactions: [])
+    assert_equal({ fetched_at: nil, count: nil }, Hcb::OrganizationTransactions.new(client, "org_1").sync_state)
+  end
+
   test "fetch_page buffers concurrent drains separately by stream_id" do
     client = FakeHcbClient.new(
       transactions: [

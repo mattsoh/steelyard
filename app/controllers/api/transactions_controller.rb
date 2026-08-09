@@ -31,6 +31,32 @@ class Api::TransactionsController < ApplicationController
     }
   end
 
+  # Cheap "did anything land on HCB since we last drained?" check -- see
+  # Hcb::OrganizationTransactions#sync_head!. Costs one HCB request, and in the
+  # common case (a handful of new transactions) that same request also *fixes*
+  # the cache, so the caller can just re-read #index. When more changed than a
+  # single page can account for, the full redrain is handed to a background job
+  # rather than paid for inline: the caller already has usable data on screen
+  # and can keep working with it, polling #sync_status to learn when the fresh
+  # drain lands.
+  #
+  # Deliberately available to readers as well as matchers: it only refreshes
+  # cached HCB data everyone on the page is already allowed to see.
+  def refresh
+    transactions = Hcb::OrganizationTransactions.new(hcb_client, organization_id)
+    status = transactions.sync_head!
+    WarmOrganizationTransactionsJob.perform_later(current_user.id, organization_id) if status == :deep
+
+    render json: { status: status, **transactions.sync_state }
+  end
+
+  # Progress poll for the background redrain #refresh hands off. Reads local
+  # cache only -- never HCB -- so polling it every few seconds can't eat into
+  # the org-shared rate limit Hcb::OrganizationTransactions exists to protect.
+  def sync_status
+    render json: Hcb::OrganizationTransactions.new(hcb_client, organization_id).sync_state
+  end
+
   private
 
   def referenced_by_visible_matches(ledger)

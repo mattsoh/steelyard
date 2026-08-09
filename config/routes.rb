@@ -22,6 +22,8 @@ Rails.application.routes.draw do
     namespace :api do
       get    "transactions",      to: "transactions#index"
       get    "transactions/page", to: "transactions#page"
+      post   "transactions/refresh",     to: "transactions#refresh"
+      get    "transactions/sync_status", to: "transactions#sync_status"
       get    "transactions/:id/comments", to: "comments#index"
       get    "matches",           to: "matches#index"
       post   "matches",           to: "matches#create"

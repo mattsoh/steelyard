@@ -176,6 +176,81 @@ async function load() {
   render();
 }
 
+// Reloads the authoritative ledger in place, leaving the current table on
+// screen until the new data is ready -- for picking up a sync without blanking
+// the view someone is reading. Skips the page-streaming path entirely: this
+// only runs right after a successful sync, so the server's drain cache is warm
+// and /api/ledger is one fast request with no HCB round trips behind it.
+async function reloadInPlace() {
+  let data, matchData;
+  try {
+    const [ledgerRes, matchRes] = await Promise.all([
+      fetch(`${API_BASE}/api/ledger`),
+      fetch(`${API_BASE}/api/matches`),
+    ]);
+    if (!ledgerRes.ok || !matchRes.ok) throw new Error("bad response");
+    data = await ledgerRes.json();
+    matchData = await matchRes.json();
+  } catch (e) {
+    return false;
+  }
+
+  applyMatches(matchData.matches);
+
+  const zeroIdx = data.ledger.findIndex((r) => r.is_zero_point);
+  const kept = zeroIdx >= 0 ? data.ledger.slice(zeroIdx) : data.ledger;
+  ledger = [...kept].reverse();
+
+  document.getElementById("stat-final-balance").textContent = fmt(data.final_balance);
+  document.getElementById("stat-count").textContent = ledger.length;
+
+  zeroBalanceOptions = data.zero_balance_options || [];
+  zeroBalanceSelectedId = data.zero_balance_selected_id || null;
+  renderCutoffSelect();
+  render();
+  return true;
+}
+
+let transactionsRefreshing = false;
+
+function setSyncNote(text) {
+  document.getElementById("sync-note").textContent = text;
+}
+
+// Runs the cheap server-side "anything new on HCB?" check and, if it turns
+// anything up, pulls it in without disturbing the table. `announce`
+// distinguishes the button (which owes the user an answer either way) from the
+// automatic check on load (which should stay silent unless it found something).
+async function refreshTransactions({ announce }) {
+  if (transactionsRefreshing) return;
+  transactionsRefreshing = true;
+  const btn = document.getElementById("btn-refresh-transactions");
+  btn.disabled = true;
+  if (announce) setSyncNote("checking HCB…");
+
+  try {
+    const changed = await syncNewTransactions({
+      onSyncing: () => setSyncNote("new activity found, syncing in the background…"),
+    });
+    if (!changed) {
+      setSyncNote(announce ? "up to date" : "");
+      return;
+    }
+
+    const before = ledger.length;
+    setSyncNote("new activity found, updating…");
+    if (!(await reloadInPlace())) {
+      setSyncNote("sync failed — reload the page");
+      return;
+    }
+    const added = ledger.length - before;
+    setSyncNote(added > 0 ? `${added} new transaction${added === 1 ? "" : "s"} loaded` : "updated");
+  } finally {
+    transactionsRefreshing = false;
+    btn.disabled = false;
+  }
+}
+
 // Shown while pages are still streaming in: raw rows with no search/filter
 // and no running balance yet (status styling is applied once matches load,
 // independently of the drain), just so the table isn't a blank spinner for
@@ -377,5 +452,11 @@ document.getElementById("cutoff-modal-overlay").addEventListener("click", (e) =>
   if (e.target.id === "cutoff-modal-overlay") hideCutoffModal();
 });
 
+document.getElementById("btn-refresh-transactions").addEventListener("click", () => refreshTransactions({ announce: true }));
+
 restoreLedgerFilters();
-load();
+// See app.js's matching call: every load ends with a check for HCB activity
+// that landed since whatever cache served this page, so a transaction made
+// minutes ago isn't invisible for the rest of the drain's TTL. Not awaited --
+// the table is already rendered and readable by then.
+load().then(() => refreshTransactions({ announce: false }));

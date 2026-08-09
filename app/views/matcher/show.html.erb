@@ -10,6 +10,10 @@
     <span class="value"><select class="cutoff-select" id="cutoff-select" aria-label="Choose cutoff period"></select></span>
   </div>
   <div class="stat">
+    <span class="label">HCB data<span class="sync-note" id="sync-note"></span></span>
+    <span class="value"><button type="button" id="btn-refresh-transactions" class="secondary" title="Check HCB for transactions that have landed since this page's data was loaded">↻ Check for new</button></span>
+  </div>
+  <div class="stat">
     <span class="label">&nbsp;</span>
     <span class="value"><%= link_to "View full ledger →", organization_ledger_path(organization_id: organization_slug), class: "nav-link" %></span>
   </div>

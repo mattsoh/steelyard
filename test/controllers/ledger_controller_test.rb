@@ -15,6 +15,8 @@ class LedgerControllerTest < ActionController::TestCase
     assert_includes response.body, 'window.HCB_ORGANIZATION_ID = "org_1"'
     assert_includes response.body, 'id="ledger-body"'
     assert_includes response.body, 'id="filter-matched"'
+    assert_includes response.body, 'id="btn-refresh-transactions"'
+    assert_includes response.body, 'id="sync-note"'
     assert_includes response.body, "Loading transactions"
   end
 

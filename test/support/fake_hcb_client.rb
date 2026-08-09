@@ -21,6 +21,13 @@ class FakeHcbClient
     @transactions = new_transactions + @transactions
   end
 
+  # Changes an already-"seen" transaction in place (same id, new attributes) so
+  # tests can simulate HCB declining one, or correcting its amount, after a
+  # drain has already cached it.
+  def update_transaction(id, attributes)
+    @transactions = @transactions.map { |t| t["id"] == id ? t.merge(attributes) : t }
+  end
+
   def organization(_id, expand: [])
     { "id" => "org_1", "name" => "Test Org", "users" => @members }
   end

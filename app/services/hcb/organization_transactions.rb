@@ -35,6 +35,12 @@ module Hcb
     # generous safety margin, not a precise cutoff.
     SAFETY_OVERLAP = 300
 
+    # How many of the newest transactions a #sync_head! peek pulls from HCB.
+    # One page, so answering "has anything landed since the last drain?" costs
+    # a single HCB request -- where a redrain has to re-fetch SAFETY_OVERLAP
+    # transactions before it can even start looking for its rejoin point.
+    PEEK_SIZE = ENV.fetch("HCB_TRANSACTION_PEEK_SIZE", 100).to_i
+
     # How long a drain result is kept as the incremental-drain baseline, well
     # past TTL -- so a redrain triggered after an org has been quiet for a
     # while (primary cache already expired) still only walks recent activity
@@ -60,7 +66,7 @@ module Hcb
         computed = true
         redrain
       end
-      write_side_caches(result) if computed
+      publish(result) if computed
 
       maybe_refresh_ahead
       result
@@ -98,10 +104,62 @@ module Hcb
     # read and never touch the cache, e.g. the legacy importer) this is the
     # write side of cache warming.
     def refresh!
-      result = redrain
-      Rails.cache.write(cache_key, result, expires_in: TTL)
-      write_side_caches(result)
-      result
+      publish(redrain)
+    end
+
+    # Cheap "did anything land on HCB since the last drain?" check, for a page
+    # load or an explicit user-triggered refresh. Pulls just one page -- the
+    # newest PEEK_SIZE transactions, incoming and outgoing alike -- which is
+    # enough to answer the question, and in the common case (the answer being "a
+    # couple of new ones") enough to fix the cache in place without a redrain.
+    #
+    # Returns:
+    #   :fresh  -- HCB's newest page already matches the cache; nothing written
+    #   :synced -- everything that changed fit inside the peek, so it has been
+    #              spliced into the cache and every reader sees it now
+    #   :deep   -- nothing cached to compare against, or more changed than one
+    #              page can account for; the caller should fall back to a full
+    #              redrain (WarmOrganizationTransactionsJob, in the background)
+    def sync_head!
+      cached = Rails.cache.read(cache_key)
+      return :deep if cached.blank?
+
+      head = page(limit: PEEK_SIZE)["data"] || []
+      return :fresh if head.empty?
+
+      # Where HCB's newest page rejoins the cache. Both lists are newest-first,
+      # so head.last is the *oldest* transaction in the peek.
+      rejoin_at = cached.index { |t| t["id"] == head.last["id"] }
+
+      # Not in the cache at all: either more than PEEK_SIZE transactions have
+      # landed since the last drain, or the cache diverges in a way one page
+      # can't explain. Needs a real redrain to splice safely.
+      return :deep if rejoin_at.nil?
+
+      # If nothing were new, the peek would line up exactly with the head of the
+      # cache, so its oldest transaction would sit at index head.size - 1.
+      # Anything shallower than that is new transactions pushing it down; a
+      # *deeper* rejoin means transactions the cache has are gone from HCB's
+      # newest page, which one page can't explain either.
+      new_count = head.size - 1 - rejoin_at
+      return :deep if new_count.negative?
+      return :fresh if new_count.zero? && head == cached[0, head.size]
+
+      # head is authoritative for its whole span, not just for the new rows, so
+      # this also picks up in-place changes to already-seen transactions inside
+      # the peek (one going declined, an amount corrected) -- the same thing
+      # SAFETY_OVERLAP exists to catch on a full redrain.
+      publish(head + cached[(rejoin_at + 1)..])
+      :synced
+    end
+
+    # Cache-only snapshot of how current the drain is, so a client can poll a
+    # background redrain's progress without spending an HCB request per poll.
+    # fetched_at advances exactly when a new result is published, which is the
+    # signal a caller waiting on #sync_head!'s :deep case watches for.
+    def sync_state
+      stamp = Rails.cache.read(fetched_at_key)
+      { fetched_at: stamp && stamp[:at].to_f, count: stamp && stamp[:count] }
     end
 
     # One HCB page per call, for callers that want to render transactions as
@@ -130,11 +188,8 @@ module Hcb
         baseline = Rails.cache.read(baseline_key)
         if baseline.present?
           result = incremental_drain(baseline)
-          Rails.cache.write(cache_key, result, expires_in: TTL)
-          Rails.cache.write(baseline_key, result, expires_in: BASELINE_TTL)
-          Rails.cache.write(fetched_at_key, Time.now, expires_in: TTL)
+          publish(result)
           Rails.cache.delete(buffer_key(stream_id))
-          write_side_caches(result)
           return { data: result, has_more: false, next_after: nil, total_count: result.size }
         end
       end
@@ -148,11 +203,8 @@ module Hcb
       if has_more
         Rails.cache.write(buffer_key(stream_id), buffered, expires_in: 2.minutes)
       else
-        Rails.cache.write(cache_key, buffered, expires_in: TTL)
-        Rails.cache.write(baseline_key, buffered, expires_in: BASELINE_TTL)
-        Rails.cache.write(fetched_at_key, Time.now, expires_in: TTL)
+        publish(buffered)
         Rails.cache.delete(buffer_key(stream_id))
-        write_side_caches(buffered)
       end
 
       { data: data, has_more: has_more, next_after: has_more ? data.last["id"] : nil, total_count: raw["total_count"] }
@@ -170,7 +222,13 @@ module Hcb
 
     def baseline_key = "#{cache_key}:baseline"
 
-    def fetched_at_key = "#{cache_key}:fetched_at"
+    # v2 holds a {at:, count:} stamp rather than the bare Time v1 held, so
+    # #sync_state can report how much is cached without deserializing the whole
+    # transaction array on every poll. Renaming (rather than reading both
+    # shapes) means an already-warm v1 cache is simply treated as unstamped,
+    # which #maybe_refresh_ahead reads as due-for-a-refresh -- so the first
+    # request after a deploy re-stamps it and the transition heals itself.
+    def fetched_at_key = "#{cache_key}:fetched:v2"
 
     def refresh_lock_key = "#{cache_key}:refreshing"
 
@@ -183,10 +241,22 @@ module Hcb
       @by_id_cache = Rails.cache.read(by_id_key)
     end
 
-    # Computed once per drain (see the three write sites above), not per
-    # request -- this is the O(n) walk that used to happen fresh inside
-    # OrganizationLedger on every single request that needed a lookup or
-    # cutoff classification.
+    # Every "we have a new authoritative copy of the org's transactions" write
+    # in one place: the primary cache, the incremental-drain baseline, the
+    # freshness stamp, and the derived side caches. Anything that produces a
+    # full result -- a drain, a stream's last page, a #sync_head! splice --
+    # goes through here, so none of them can update one and forget another.
+    def publish(result)
+      Rails.cache.write(cache_key, result, expires_in: TTL)
+      Rails.cache.write(baseline_key, result, expires_in: BASELINE_TTL)
+      Rails.cache.write(fetched_at_key, { at: Time.now, count: result.size }, expires_in: TTL)
+      write_side_caches(result)
+      result
+    end
+
+    # Computed once per drain (see #publish), not per request -- this is the
+    # O(n) walk that used to happen fresh inside OrganizationLedger on every
+    # single request that needed a lookup or cutoff classification.
     def write_side_caches(result)
       Rails.cache.write(by_id_key, result.index_by { |t| t["id"] }, expires_in: TTL)
 
@@ -222,22 +292,19 @@ module Hcb
     def maybe_refresh_ahead
       return unless @client.respond_to?(:user_id) && @client.user_id
 
-      fetched_at = Rails.cache.read(fetched_at_key)
-      return unless fetched_at
-      return if Time.now - fetched_at < BACKGROUND_REFRESH_INTERVAL
+      stamp = Rails.cache.read(fetched_at_key)
+      return if stamp && Time.now - stamp[:at] < BACKGROUND_REFRESH_INTERVAL
       return unless Rails.cache.write(refresh_lock_key, true, expires_in: BACKGROUND_REFRESH_INTERVAL, unless_exist: true)
 
       WarmOrganizationTransactionsJob.perform_later(@client.user_id, @organization_id, filters: @filters)
     end
 
     # Shared by #all's cache-miss path and #refresh!: incrementally redrains
-    # against whatever baseline we have (falling back to a full #drain when
-    # there isn't one), then re-saves the result as the new baseline.
+    # against whatever baseline we have, falling back to a full #drain when
+    # there isn't one. Pure computation -- callers #publish the result, which is
+    # what re-saves it as the next redrain's baseline.
     def redrain
-      result = incremental_drain(Rails.cache.read(baseline_key))
-      Rails.cache.write(baseline_key, result, expires_in: BASELINE_TTL)
-      Rails.cache.write(fetched_at_key, Time.now, expires_in: TTL)
-      result
+      incremental_drain(Rails.cache.read(baseline_key))
     end
 
     def drain

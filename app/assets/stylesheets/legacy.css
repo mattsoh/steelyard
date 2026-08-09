@@ -36,6 +36,17 @@ header#stats {
 .stat .label { font-size: 11px; color: #656d76; text-transform: uppercase; letter-spacing: 0.03em; }
 .stat .value { font-size: 16px; font-weight: 600; }
 
+/* Transient status for the "check for new" refresh, in the label row above
+   the button. Lowercased against the label's uppercasing (it's a sentence
+   fragment, not a heading) and not laid out until it has text, so an empty
+   note can't pad the header. */
+.sync-note:not(:empty) {
+  margin-left: 6px;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--in-color);
+}
+
 /* Scoped to .legacy-grid (matcher + ledger pages) rather than the bare
    `main` element -- this stylesheet is bundled site-wide via the :app
    asset alias, so an unscoped `main {}` rule was also hijacking the
