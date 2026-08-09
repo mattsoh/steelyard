@@ -2,8 +2,25 @@
     the Tailwind pages and the legacy matcher/ledger pages alike. Styles live in
     app/assets/stylesheets/site.css. %>
 <%= link_to root_path, id: "site-logo-link" do %>
+  <%# Rasterised rather than pointing at the SVGs: the scale glyph sits inside a
+      drop-shadow/inner-shadow filter, and a browser may rasterise that filter
+      region at CSS resolution and upscale it, which softens the glyph on a 2x
+      display while the rounded rect around it stays sharp. The PNGs below are
+      rendered at the exact device sizes by script/generate_icons.sh. %>
   <picture>
-    <source srcset="<%= asset_path("favicon-dark.svg") %>" media="(prefers-color-scheme: dark)">
-    <%= image_tag "favicon-light.svg", id: "site-logo", alt: "Steelyard", width: 32, height: 32 %>
+    <source
+      srcset="<%= asset_path("logo-dark-1x.png") %> 1x,
+              <%= asset_path("logo-dark-2x.png") %> 2x,
+              <%= asset_path("logo-dark-3x.png") %> 3x"
+      media="(prefers-color-scheme: dark)">
+    <%= image_tag "logo-1x.png",
+                  id: "site-logo",
+                  alt: "Steelyard",
+                  width: 32, height: 32,
+                  srcset: {
+                    "logo-1x.png" => "1x",
+                    "logo-2x.png" => "2x",
+                    "logo-3x.png" => "3x"
+                  } %>
   </picture>
 <% end %>
