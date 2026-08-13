@@ -52,6 +52,11 @@ function invalidateCachedTransactionRows() {
 // Never throws: a refresh that fails is a no-op, not a broken page.
 const SYNC_POLL_INTERVAL_MS = 2500;
 const SYNC_POLL_TIMEOUT_MS = 180_000;
+// A full reload re-walks the whole history rather than the recent window, so it
+// gets a much longer leash before the client gives up waiting on it. Giving up
+// only stops the *waiting* -- the server-side drain carries on regardless, and
+// the next load picks it up.
+const FULL_RELOAD_POLL_TIMEOUT_MS = 600_000;
 
 function orgApiBase() {
   return `/organizations/${window.HCB_ORGANIZATION_ID}`;
@@ -80,14 +85,59 @@ async function syncNewTransactions({ onSyncing } = {}) {
   // cache-only status endpoint (which never touches HCB) until it publishes a
   // drain newer than the one we started from.
   if (onSyncing) onSyncing();
-  const deadline = Date.now() + SYNC_POLL_TIMEOUT_MS;
+  return waitForNewerDrain(started.fetched_at);
+}
+
+// Asks the server to re-walk the organization's ENTIRE history from HCB, rather
+// than the recent window syncNewTransactions settles for, and waits for the
+// result to land. Expensive enough (one HCB request per 100 transactions of
+// total history, against a rate limit shared by everyone using this app) that
+// callers confirm with the user first -- it's the escape hatch for a cached
+// transaction that changed too far back for an incremental drain to notice.
+//
+// Same contract as syncNewTransactions: resolves true only once the server has
+// actually published fresher data, never throws, and leaves the current rows on
+// screen while it runs.
+async function fullReloadTransactions({ onSyncing } = {}) {
+  let started;
+  try {
+    const res = await fetch(`${orgApiBase()}/api/transactions/reload`, { method: "POST" });
+    if (!res.ok) return false;
+    started = await res.json();
+  } catch {
+    return false;
+  }
+
+  invalidateCachedTransactionRows();
+  if (onSyncing) onSyncing();
+  // "already_running" (someone else, or another tab, got there first) is
+  // handled the same way: the drain we're waiting on is the one they started.
+  return waitForNewerDrain(started.fetched_at, FULL_RELOAD_POLL_TIMEOUT_MS);
+}
+
+// Shown before a full reload is started, on both pages. Deliberately blunt
+// about the cost: "check for new" covers everything a full reload does *except*
+// re-reading history that was already drained, so the only reason to reach for
+// this one is a value that changed further back than that -- and it's paid for
+// out of a rate limit the whole organization shares.
+const FULL_RELOAD_WARNING =
+  "Full reload re-reads this organization's entire transaction history from HCB.\n\n" +
+  "It is slow (minutes, on a large organization) and uses a big share of the HCB rate limit everyone here shares. " +
+  "“Check for new” already picks up new and recently-changed transactions — only use this if you think an older transaction changed.\n\n" +
+  "Start the full reload?";
+
+// Polls the cache-only status endpoint (which never touches HCB, so polling it
+// can't eat into the shared rate limit) until the server publishes a drain
+// newer than the one the caller started from.
+async function waitForNewerDrain(startedFetchedAt, timeoutMs = SYNC_POLL_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     await sleep(SYNC_POLL_INTERVAL_MS);
     try {
       const res = await fetch(`${orgApiBase()}/api/transactions/sync_status`);
       if (!res.ok) continue;
       const current = await res.json();
-      if (current.fetched_at && current.fetched_at !== started.fetched_at) return true;
+      if (current.fetched_at && current.fetched_at !== startedFetchedAt) return true;
     } catch {
       // Transient failure mid-poll -- keep waiting until the deadline.
     }

@@ -16,6 +16,12 @@ class OrganizationLedger
     def beginning? = index == -1
   end
 
+  # Named rather than inlined into #transaction_by_id because it also has to be
+  # *invalidated* elsewhere: Hcb::OrganizationTransactions#refresh_one! drops
+  # this key so a day-old copy can't shadow a transaction the user just asked
+  # to re-check.
+  def self.single_transaction_cache_key(id) = "hcb:transaction:#{id}:v1"
+
   def initialize(client, organization_id)
     @client = client
     @organization_id = organization_id
@@ -70,14 +76,19 @@ class OrganizationLedger
     transactions.drop(cutoff_index + 1)
   end
 
-  def transaction_by_id(id)
+  # `remote: false` restricts the lookup to what this organization's drain
+  # already knows, for callers that run on every request and would rather
+  # answer "don't know" than pay a live HCB round trip per unknown id (see
+  # Matches::Resync, which skips a match it can't fully resolve anyway).
+  def transaction_by_id(id, remote: true)
     raw = @hcb_transactions.find(id)
     return Hcb::TransactionPresenter.new(raw) if raw
 
     index = index_of(id)
     return transactions[index] if index
+    return nil unless remote
 
-    raw = Rails.cache.fetch("hcb:transaction:#{id}:v1", expires_in: SINGLE_TRANSACTION_TTL) { @client.transaction(id) }
+    raw = Rails.cache.fetch(self.class.single_transaction_cache_key(id), expires_in: SINGLE_TRANSACTION_TTL) { @client.transaction(id) }
     raw && Hcb::TransactionPresenter.new(raw)
   rescue OAuth2::Error => e
     raise unless e.response.status == 404

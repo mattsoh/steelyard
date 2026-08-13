@@ -1,29 +1,39 @@
 <% content_for :title, "Full Ledger — Steelyard" %>
 
 <header id="stats">
-  <div class="stat">
-    <span class="label">&nbsp;</span>
-    <span class="value"><%= link_to "← Back to matcher", organization_matcher_path(organization_id: organization_slug), class: "nav-link" %></span>
+  <%# Same split as the matcher header: controls on the top row, links and
+      figures on the next. %>
+  <div class="stats-row">
+    <div class="stat">
+      <span class="label">Cutoff date</span>
+      <span class="value"><select class="cutoff-select" id="cutoff-select" aria-label="Choose cutoff period"></select></span>
+    </div>
+    <div class="stat">
+      <span class="label">HCB data<span class="sync-note" id="sync-note"></span></span>
+      <span class="value stat-buttons">
+        <button type="button" id="btn-refresh-transactions" class="secondary" title="Check HCB for transactions that have landed since this page's data was loaded">↻ Check for new</button>
+        <button type="button" id="btn-full-reload" class="secondary" title="Re-read this organization's entire transaction history from HCB. Slow, and heavy on the HCB rate limit everyone shares — only needed when an older transaction has changed.">⟳ Full reload</button>
+      </span>
+    </div>
   </div>
-  <div class="stat">
-    <span class="label">&nbsp;</span>
-    <span class="value"><%= link_to "Change organization", organizations_path, class: "nav-link" %></span>
-  </div>
-  <div class="stat">
-    <span class="label">Cutoff date</span>
-    <span class="value"><select class="cutoff-select" id="cutoff-select" aria-label="Choose cutoff period"></select></span>
-  </div>
-  <div class="stat">
-    <span class="label">HCB data<span class="sync-note" id="sync-note"></span></span>
-    <span class="value"><button type="button" id="btn-refresh-transactions" class="secondary" title="Check HCB for transactions that have landed since this page's data was loaded">↻ Check for new</button></span>
-  </div>
-  <div class="stat">
-    <span class="label">Final running balance (approx., this window)</span>
-    <span class="value" id="stat-final-balance">—</span>
-  </div>
-  <div class="stat">
-    <span class="label">Total transactions</span>
-    <span class="value" id="stat-count">—</span>
+
+  <div class="stats-row">
+    <div class="stat">
+      <span class="label">&nbsp;</span>
+      <span class="value"><%= link_to "← Back to matcher", organization_matcher_path(organization_id: organization_slug), class: "nav-link" %></span>
+    </div>
+    <div class="stat">
+      <span class="label">&nbsp;</span>
+      <span class="value"><%= link_to "Change organization", organizations_path, class: "nav-link" %></span>
+    </div>
+    <div class="stat">
+      <span class="label">Final running balance (approx., this window)</span>
+      <span class="value" id="stat-final-balance">—</span>
+    </div>
+    <div class="stat">
+      <span class="label">Total transactions</span>
+      <span class="value" id="stat-count">—</span>
+    </div>
   </div>
 </header>
 

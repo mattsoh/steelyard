@@ -211,10 +211,52 @@ async function reloadInPlace() {
   return true;
 }
 
+// Splices one freshly re-checked transaction (details.js's per-transaction
+// refresh button) into the rendered rows. Only the transaction's own fields are
+// updated: the running balance every row after it carries would also shift if
+// the amount changed, and that's only correct to recompute from the full
+// history, so a changed amount re-reads the authoritative ledger instead.
+function applyRefreshedTransaction(fresh) {
+  const index = ledger.findIndex((r) => r.id === fresh.id);
+  if (index < 0) return;
+
+  const previous = ledger[index];
+  ledger[index] = { ...previous, ...fresh };
+  if (previous.amount !== fresh.amount) {
+    reloadInPlace();
+    return;
+  }
+  render();
+}
+
+// Re-fetches just /api/matches and re-applies matched/discrepancy styling.
+// Called by details.js when a per-transaction refresh moved a matched
+// transaction's amount: the server re-derives the affected match's discrepancy
+// (see Matches::Resync), so a row can change bucket without anything about the
+// row itself changing. Never throws -- a failure just leaves the table as it is.
+async function reloadMatches() {
+  try {
+    const res = await fetch(`${API_BASE}/api/matches`);
+    if (!res.ok) throw new Error("bad response");
+    applyMatches((await res.json()).matches);
+    render();
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
 let transactionsRefreshing = false;
 
 function setSyncNote(text) {
   document.getElementById("sync-note").textContent = text;
+}
+
+// Both HCB buttons share one busy state: they hit the same drain, so letting
+// one run while the other is mid-flight would just have them fight over it.
+function setSyncButtonsDisabled(disabled) {
+  document.getElementById("btn-refresh-transactions").disabled = disabled;
+  document.getElementById("btn-full-reload").disabled = disabled;
 }
 
 // Runs the cheap server-side "anything new on HCB?" check and, if it turns
@@ -224,8 +266,7 @@ function setSyncNote(text) {
 async function refreshTransactions({ announce }) {
   if (transactionsRefreshing) return;
   transactionsRefreshing = true;
-  const btn = document.getElementById("btn-refresh-transactions");
-  btn.disabled = true;
+  setSyncButtonsDisabled(true);
   if (announce) setSyncNote("checking HCB…");
 
   try {
@@ -247,7 +288,40 @@ async function refreshTransactions({ announce }) {
     setSyncNote(added > 0 ? `${added} new transaction${added === 1 ? "" : "s"} loaded` : "updated");
   } finally {
     transactionsRefreshing = false;
-    btn.disabled = false;
+    setSyncButtonsDisabled(false);
+  }
+}
+
+// The expensive escape hatch: re-reads the org's entire history from HCB, for
+// when an older transaction changed in a way the incremental drain keeps
+// splicing back over. Confirmed first (see FULL_RELOAD_WARNING) because the
+// cost lands on everyone using the app, not just whoever pressed it.
+async function fullReloadTransactionsAndRender() {
+  if (transactionsRefreshing) return;
+  if (!confirm(FULL_RELOAD_WARNING)) return;
+
+  transactionsRefreshing = true;
+  setSyncButtonsDisabled(true);
+  setSyncNote("full reload started…");
+
+  try {
+    const changed = await fullReloadTransactions({
+      onSyncing: () => setSyncNote("re-reading full history from HCB — this can take a few minutes…"),
+    });
+    // The drain runs server-side, so giving up waiting isn't the same as it
+    // failing -- it's still going, and any later load will pick it up.
+    if (!changed) {
+      setSyncNote("still running — reload this page in a few minutes to see the result");
+      return;
+    }
+    if (!(await reloadInPlace())) {
+      setSyncNote("full reload finished, but this page couldn't update — reload the page");
+      return;
+    }
+    setSyncNote("full reload complete");
+  } finally {
+    transactionsRefreshing = false;
+    setSyncButtonsDisabled(false);
   }
 }
 
@@ -453,6 +527,7 @@ document.getElementById("cutoff-modal-overlay").addEventListener("click", (e) =>
 });
 
 document.getElementById("btn-refresh-transactions").addEventListener("click", () => refreshTransactions({ announce: true }));
+document.getElementById("btn-full-reload").addEventListener("click", fullReloadTransactionsAndRender);
 
 restoreLedgerFilters();
 // See app.js's matching call: every load ends with a check for HCB activity

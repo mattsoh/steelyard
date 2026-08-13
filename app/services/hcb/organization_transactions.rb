@@ -48,6 +48,17 @@ module Hcb
     # before (no baseline at all) pays the full-history cost.
     BASELINE_TTL = 7.days
 
+    # How long a claimed full reload blocks another one from being queued --
+    # comfortably longer than a full-history drain takes, since the point is to
+    # stop a second one being queued *while the first is still running*. The job
+    # releases the claim as soon as it's done, so this only matters if the job
+    # dies without ever finishing.
+    FULL_RELOAD_LOCK_TTL = 15.minutes
+
+    # What #refresh_one! hands back: the same transaction as the cache had it
+    # and as HCB has it now, for callers that want to report what changed.
+    RefreshedTransaction = Struct.new(:previous, :current, keyword_init: true)
+
     def initialize(client, organization_id, filters: {})
       @client = client
       @organization_id = organization_id
@@ -106,6 +117,57 @@ module Hcb
     def refresh!
       publish(redrain)
     end
+
+    # Full-history redrain that ignores the baseline entirely: every page is
+    # re-fetched from HCB rather than paging forward only to a rejoin point. So
+    # it costs one HCB request per PAGE_SIZE transactions of *total* org
+    # history, where #refresh! costs one per PAGE_SIZE of recent activity --
+    # which is why the UI warns before asking for it. It exists for the case an
+    # incremental drain can't heal on its own: a transaction that changed
+    # further back than SAFETY_OVERLAP reaches, so every redrain keeps splicing
+    # the stale copy back on.
+    def reload!
+      publish(drain)
+    end
+
+    # Re-fetches ONE transaction from HCB and splices it into the cached drain
+    # in place. A transaction isn't frozen once drained -- a pending card charge
+    # settles at a different amount, a transfer is reversed, a memo is edited --
+    # and neither #sync_head! (newest page only) nor #refresh! (SAFETY_OVERLAP
+    # window) can see a change to an older one. This is the cheap targeted
+    # answer: a single HCB request for the single transaction someone is
+    # looking at.
+    #
+    # Returns nil for an id that isn't part of this organization's drained
+    # history -- which is also the only case where nothing is written, since
+    # splicing an arbitrary id into an org's cache on request would let a
+    # caller put another org's transaction in it.
+    def refresh_one!(id)
+      current = Rails.cache.read(cache_key) || all
+      index = current.index { |t| t["id"] == id }
+      return nil if index.nil?
+
+      fresh = @client.transaction(id)
+      return RefreshedTransaction.new(previous: current[index], current: current[index]) if fresh.blank? || fresh["id"] != id
+
+      previous = current[index]
+      updated = current.dup
+      updated[index] = fresh
+      publish(updated)
+      # OrganizationLedger keeps its own long-lived per-id copy for ids that
+      # aren't in the drain; drop it so it can't shadow what we just re-fetched.
+      Rails.cache.delete(OrganizationLedger.single_transaction_cache_key(id))
+
+      RefreshedTransaction.new(previous: previous, current: fresh)
+    end
+
+    # Compare-and-set claim on the (expensive, org-shared) full reload, so two
+    # people mashing the button -- or one person with two tabs open -- can't
+    # queue two full-history drains against the rate limit at once. The loser
+    # just watches the winner's drain land, which is the same result.
+    def claim_full_reload! = Rails.cache.write(full_reload_lock_key, true, expires_in: FULL_RELOAD_LOCK_TTL, unless_exist: true)
+
+    def release_full_reload! = Rails.cache.delete(full_reload_lock_key)
 
     # Cheap "did anything land on HCB since the last drain?" check, for a page
     # load or an explicit user-triggered refresh. Pulls just one page -- the
@@ -231,6 +293,8 @@ module Hcb
     def fetched_at_key = "#{cache_key}:fetched:v2"
 
     def refresh_lock_key = "#{cache_key}:refreshing"
+
+    def full_reload_lock_key = "#{cache_key}:full_reloading"
 
     def filters_cache_key
       @filters.to_a.sort_by(&:first).to_h.to_json

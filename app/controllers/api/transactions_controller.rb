@@ -50,6 +50,46 @@ class Api::TransactionsController < ApplicationController
     render json: { status: status, **transactions.sync_state }
   end
 
+  # Re-checks ONE transaction against HCB, for the detail modal. #refresh only
+  # ever looks at the newest page and a redrain only re-fetches its recent
+  # window, so a transaction older than that which changed on HCB (a pending
+  # charge that settled differently, a reversal) can't be re-checked any other
+  # way short of the full reload below. Costs a single HCB request.
+  #
+  # Answers with both the old and new copy so the caller can say what actually
+  # changed, plus any match whose discrepancy moved as a result -- a leg
+  # changing amount is exactly the case where a match saved as balanced isn't
+  # balanced any more.
+  def refresh_one
+    result = Hcb::OrganizationTransactions.new(hcb_client, organization_id).refresh_one!(params[:id])
+    return render json: { error: "That transaction isn't part of this organization's history." }, status: :not_found if result.nil?
+
+    render json: {
+      previous: Hcb::TransactionPresenter.new(result.previous).as_json,
+      transaction: Hcb::TransactionPresenter.new(result.current).as_json,
+      matches_changed: resync_matches_for(params[:id])
+    }
+  rescue OAuth2::Error => e
+    raise unless e.response.status == 404
+
+    render json: { error: "HCB no longer has that transaction." }, status: :not_found
+  end
+
+  # Full-history redrain, on explicit request -- one HCB request per 100
+  # transactions of the org's *entire* history, against a rate limit shared by
+  # everyone using this app, which is why the UI warns first. Handed to the
+  # background job rather than run inline (the drain outlives any reasonable
+  # request timeout on a large org) and claimed under a lock, so two people
+  # asking at once still only costs one drain. Either way the caller polls
+  # #sync_status and reloads when a newer drain lands.
+  def reload
+    transactions = Hcb::OrganizationTransactions.new(hcb_client, organization_id)
+    claimed = transactions.claim_full_reload!
+    WarmOrganizationTransactionsJob.perform_later(current_user.id, organization_id, full: true) if claimed
+
+    render json: { status: claimed ? "started" : "already_running", **transactions.sync_state }
+  end
+
   # Progress poll for the background redrain #refresh hands off. Reads local
   # cache only -- never HCB -- so polling it every few seconds can't eat into
   # the org-shared rate limit Hcb::OrganizationTransactions exists to protect.
@@ -58,6 +98,22 @@ class Api::TransactionsController < ApplicationController
   end
 
   private
+
+  # Re-derives the discrepancy of every active match this transaction is a leg
+  # of, now that its amount may have moved, and reports the ones that changed so
+  # the frontend can tell the user their match no longer balances (and re-render
+  # it into the right bucket). Built after the splice above, so the ledger reads
+  # the refreshed value.
+  def resync_matches_for(transaction_id)
+    match_ids = MatchTransaction.active
+      .where(hcb_organization_id: organization_id, hcb_transaction_id: transaction_id)
+      .select(:match_id)
+    matches = Match.active.for_organization(organization_id)
+      .where(id: match_ids).includes(:match_transactions, :adjustments)
+
+    Matches::Resync.new(ledger: OrganizationLedger.new(hcb_client, organization_id), matches: matches).call
+      .map { |change| { id: change.match.id, from: change.from_cents / 100.0, to: change.to_cents / 100.0 } }
+  end
 
   def referenced_by_visible_matches(ledger)
     MatchTransaction.active.where(hcb_organization_id: organization_id)

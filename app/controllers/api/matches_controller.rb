@@ -5,7 +5,16 @@ class Api::MatchesController < ApplicationController
 
   def index
     ledger = OrganizationLedger.new(hcb_client, organization_id)
-    matches = Match.active.for_organization(organization_id).includes(:created_by, :match_transactions).order(:id)
+    matches = Match.active.for_organization(organization_id)
+      .includes(:created_by, :match_transactions, :adjustments).order(:id)
+
+    # An HCB transaction can change value after it was matched (see
+    # Matches::Resync), so the stored discrepancy -- and the balanced/unbalanced
+    # bucket the frontend sorts on -- is re-derived from current amounts before
+    # serializing. This is the check that covers a plain page load and the
+    # reload that follows a sync; the single-transaction refresh runs its own.
+    Matches::Resync.new(ledger: ledger, matches: matches).call
+
     render json: { matches: matches.map { |m| serialize(m, ledger) } }
   end
 

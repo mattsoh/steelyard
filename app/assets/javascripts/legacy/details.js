@@ -41,13 +41,10 @@ function commentHtml(c) {
   return `<div class="detail-comment"><strong>${author}:</strong>${adminHtml} ${escapeHtml(c.content)}${fileHtml}${dateHtml}</div>`;
 }
 
-function showDetailsModal(t) {
-  const overlay = document.getElementById("detail-modal-overlay");
-  const title = document.getElementById("detail-modal-title");
-  const body = document.getElementById("detail-modal-body");
-
-  title.textContent = `${t.date} — ${fmtDetail(t.amount)}`;
-
+// Field label -> value, in display order. Shared by the initial render and the
+// re-render after a refresh, and by the diff that reports what a refresh
+// changed, so all three can't drift apart.
+function detailFields(t) {
   const statusParts = [];
   if (t.pending) statusParts.push("Pending");
   if (t.declined) statusParts.push("Declined" + (t.decline_reason ? ` (${t.decline_reason})` : ""));
@@ -55,7 +52,9 @@ function showDetailsModal(t) {
   if (t.missing_receipt) statusParts.push("Missing receipt");
   if (t.lost_receipt) statusParts.push("Lost receipt");
 
-  const fields = [
+  return [
+    ["Amount", fmtDetail(t.amount)],
+    ["Date", t.date],
     ["Memo", t.memo],
     ["Tags", t.tags],
     ["User", t.user_name],
@@ -67,26 +66,155 @@ function showDetailsModal(t) {
     // adds noise for the ones (ACH, checks) where the two actually diverge.
     ...(t.settled_date && t.settled_date !== t.date ? [ [ "Settled", t.settled_date ] ] : []),
   ];
+}
 
-  const isManual = t.id < 0;
-  const deleteHtml = isManual
-    ? `<div class="modal-field"><button type="button" class="danger" id="detail-delete-tx">Delete transaction</button></div>`
-    : "";
+// The transaction the modal is currently showing, so the refresh button knows
+// what it's refreshing (and what the values were before).
+let detailTransaction = null;
 
-  body.innerHTML = fields.map(([label, value]) => `
-    <div class="modal-field">
-      <div class="field-label">${label}</div>
-      <div class="field-value">${escapeHtml(value) || "—"}</div>
-    </div>
-  `).join("") + (isManual ? "" : commentsFieldHtml("Loading…")) + deleteHtml;
+function showDetailsModal(t) {
+  const overlay = document.getElementById("detail-modal-overlay");
 
+  detailTransaction = t;
+  renderDetailsModal(t);
   overlay.classList.remove("hidden");
 
-  if (isManual) {
+  if (isManualTransaction(t)) {
     document.getElementById("detail-delete-tx").addEventListener("click", () => deleteManualTransaction(t.id));
   } else {
     loadComments(t.id);
   }
+}
+
+// Manually-added transactions carry negative numeric ids rather than HCB's
+// "txn_<hashid>" -- they were never on HCB, so there's nothing to re-check
+// against it and no comments thread to load.
+function isManualTransaction(t) {
+  return t.id < 0;
+}
+
+// Re-rendered wholesale after a refresh, rather than patched field by field --
+// any of them can have changed. The outcome of that refresh goes into the note
+// slot afterwards (setRefreshNote), which is the one thing that survives a
+// re-render being about the refresh rather than about the transaction.
+function renderDetailsModal(t) {
+  const title = document.getElementById("detail-modal-title");
+  const body = document.getElementById("detail-modal-body");
+
+  title.textContent = `${t.date} — ${fmtDetail(t.amount)}`;
+
+  const isManual = isManualTransaction(t);
+  const actionsHtml = isManual
+    ? `<div class="modal-actions"><button type="button" class="danger" id="detail-delete-tx">Delete transaction</button></div>`
+    : `<div class="modal-actions">
+         <button type="button" class="secondary" id="detail-refresh-tx" title="Re-check this one transaction against HCB — picks up an amount, status or memo that changed since it was loaded">↻ Refresh from HCB</button>
+         <span class="detail-refresh-note" id="detail-refresh-note"></span>
+       </div>`;
+
+  body.innerHTML = detailFields(t).map(([label, value]) => `
+    <div class="modal-field">
+      <div class="field-label">${label}</div>
+      <div class="field-value">${escapeHtml(value) || "—"}</div>
+    </div>
+  `).join("") + (isManual ? "" : commentsFieldHtml("Loading…")) + actionsHtml;
+
+  if (!isManual) {
+    document.getElementById("detail-refresh-tx").addEventListener("click", refreshDetailTransaction);
+  }
+}
+
+function setRefreshNote(html, isWarning) {
+  const el = document.getElementById("detail-refresh-note");
+  if (!el) return;
+  el.innerHTML = html;
+  el.classList.toggle("warning", !!isWarning);
+}
+
+// Re-fetches the open transaction from HCB (one request server-side) and
+// reports what moved. Worth its own button rather than folding into the
+// header's "check for new": that only looks at the newest page, so a change to
+// an older transaction -- a pending charge settling for more, a reversal -- is
+// invisible to it no matter how many times it's pressed.
+async function refreshDetailTransaction() {
+  const t = detailTransaction;
+  if (!t) return;
+  const btn = document.getElementById("detail-refresh-tx");
+  btn.disabled = true;
+  setRefreshNote("checking HCB…");
+
+  let data;
+  try {
+    const res = await fetch(`${API_BASE}/api/transactions/${t.id}/refresh`, { method: "POST" });
+    if (await handledReauthRequired(res)) return;
+    if (!res.ok) throw await serverError(res);
+    data = await res.json();
+  } catch (e) {
+    btn.disabled = false;
+    // Only a message this code put there is worth showing; anything else (a
+    // network failure, an HTML error page that didn't parse) reads as noise.
+    setRefreshNote(escapeHtml(e.refreshMessage || "Could not refresh this transaction. Try again."), true);
+    return;
+  }
+
+  const matchesChanged = data.matches_changed || [];
+
+  // Hand the fresh values to whichever page is hosting the modal, so the row
+  // behind it (and any total computed from it) stops showing the stale amount.
+  // Done before the still-open check below: the answer is just as valid if the
+  // modal was closed while the request was in flight, and throwing it away
+  // would leave the page showing values we know are stale.
+  if (typeof applyRefreshedTransaction === "function") applyRefreshedTransaction(data.transaction);
+
+  // A leg changing amount can push a match out of balance (or back into it);
+  // the server has already re-derived the stored discrepancy, so this just
+  // pulls the corrected matches back into the page.
+  if (matchesChanged.length && typeof reloadMatches === "function") reloadMatches();
+
+  // Still the transaction the user is looking at? They may have closed the
+  // modal, or opened another row, while the request was in flight.
+  if (!detailTransaction || detailTransaction.id !== t.id) return;
+
+  detailTransaction = data.transaction;
+  const changes = detailChanges(data.previous, data.transaction);
+  renderDetailsModal(data.transaction);
+  setRefreshNote(refreshNoteHtml(changes, matchesChanged), changes.length > 0 || matchesChanged.length > 0);
+  loadComments(t.id);
+}
+
+// The server's own explanation of a failed response, when it sent one (a
+// transaction HCB no longer has, say). Errors carry it on a custom property so
+// the catch can tell it apart from a browser-generated message like
+// "Failed to fetch", which means nothing to the person reading it.
+async function serverError(res) {
+  const error = new Error(`request failed with ${res.status}`);
+  try {
+    const data = await res.json();
+    if (data.error) error.refreshMessage = data.error;
+  } catch (e) {
+    // Not JSON (an error page) -- the generic message covers it.
+  }
+  return error;
+}
+
+function detailChanges(previous, current) {
+  const before = new Map(detailFields(previous));
+  return detailFields(current).filter(([label, value]) => before.get(label) !== value)
+    .map(([label, value]) => ({ label, from: before.get(label), to: value }));
+}
+
+function refreshNoteHtml(changes, matchesChanged) {
+  if (!changes.length && !matchesChanged.length) return "up to date — nothing changed";
+
+  const changeText = changes
+    .map((c) => `${escapeHtml(c.label)}: ${escapeHtml(c.from) || "—"} → <strong>${escapeHtml(c.to) || "—"}</strong>`)
+    .join("; ");
+  // Spelled out per match rather than counted: "a match is now off by $12" is
+  // the part someone actually has to go and do something about.
+  const matchText = matchesChanged
+    .map((m) => (m.to === 0 ? "a match now balances" : `a match is now off by ${fmtDetail(m.to)}`))
+    .join("; ");
+
+  return [changeText, matchText].filter(Boolean).join(" — ");
 }
 
 async function loadComments(transactionId) {
@@ -118,6 +246,7 @@ async function deleteManualTransaction(id) {
 }
 
 function hideDetailsModal() {
+  detailTransaction = null;
   document.getElementById("detail-modal-overlay").classList.add("hidden");
 }
 

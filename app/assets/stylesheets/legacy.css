@@ -18,10 +18,15 @@ body {
   font-size: 14px;
 }
 
+/* Two explicit rows (see .stats-row) rather than one long wrapping strip: the
+   controls -- cutoff, and the two HCB buttons -- keep the top row to
+   themselves, and the links and figures start below them. Wrapping alone put
+   the buttons wherever the widths happened to leave room, which got hard to
+   find once there was more than one of them. */
 header#stats {
   display: flex;
-  gap: 24px;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 10px;
   /* Left padding reserves the gutter that the fixed #site-logo-link sits in
      (16px offset + 32px logo + 20px gap), so the first stat clears it. */
   padding: 12px 20px 12px 68px;
@@ -32,9 +37,18 @@ header#stats {
   z-index: 10;
 }
 
+.stats-row {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+
 .stat { display: flex; flex-direction: column; }
 .stat .label { font-size: 11px; color: #656d76; text-transform: uppercase; letter-spacing: 0.03em; }
 .stat .value { font-size: 16px; font-weight: 600; }
+
+.stat-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
 
 /* Transient status for the "check for new" refresh, in the label row above
    the button. Lowercased against the label's uppercasing (it's a sentence
@@ -588,6 +602,30 @@ button.danger {
 }
 .modal-field .field-value { white-space: pre-wrap; word-break: break-word; }
 
+/* The modal's own actions (refresh this transaction, delete a manual one),
+   pinned below the fields with a rule above them so they read as things you
+   can do rather than one more field. */
+.modal-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.detail-refresh-note {
+  font-size: 12px;
+  color: #656d76;
+  flex: 1 1 180px;
+}
+
+/* Something actually moved -- an amount, a status, a match that no longer
+   balances. Called out rather than left in the same grey as "up to date",
+   which is the answer nearly every refresh gives. */
+.detail-refresh-note.warning { color: var(--amber); font-weight: 600; }
+
 .detail-comment + .detail-comment { margin-top: 8px; }
 .detail-comment-date { font-size: 11px; color: #656d76; }
 .detail-comment-admin-only { font-size: 11px; color: #656d76; font-style: italic; }
@@ -836,9 +874,11 @@ tr.zero-point { background: #fff8c5; }
 
   header#stats {
     position: static;
-    gap: 12px 20px;
+    gap: 8px;
     padding: 10px 12px 10px 56px;
   }
+
+  .stats-row { gap: 12px 20px; }
 
   .match-row {
     grid-template-columns: 1fr;
@@ -876,8 +916,10 @@ tr.zero-point { background: #fff8c5; }
 
   header#stats {
     position: static;
-    gap: 10px 16px;
+    gap: 8px;
   }
+
+  .stats-row { gap: 10px 16px; }
 
   .panel.tray {
     max-height: 45vh;
