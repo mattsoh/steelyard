@@ -49,6 +49,39 @@ module Hcb
     # and `expense_payout` have no sent-side timestamp in the v4 API at all
     # (their partials don't call `object_shape`, which is what supplies the
     # default `created_at`) -- those fall through to the settled `date`.
+    # Where each type files its answer to "what is this for?", first match wins.
+    # Every type that moves money on someone's instruction collects one, under
+    # its own name: transfers, checks and wires ask for it up front
+    # (`payment_for`), a disbursement carries it as the transfer's own memo, an
+    # invoice's is the line item it billed for, and a donation's is whatever the
+    # donor typed alongside the money.
+    #
+    # Worth its own field rather than leaving it to #memo, because for an
+    # *incoming* disbursement HCB rewrites the transaction memo to "Transfer
+    # from <org>" -- the sender's stated purpose survives only on the nested
+    # transfer object, which is exactly the copy the receiving org is reading.
+    REASON_PATHS = [
+      %w[ach_transfer payment_for],
+      %w[check payment_for],
+      %w[wire_transfer payment_for],
+      %w[wise_transfer payment_for],
+      %w[transfer memo],
+      %w[invoice description],
+      %w[donation message]
+    ].freeze
+
+    # Where a type tracks its own progress, separately from the
+    # transaction-level pending/declined/reversed flags: a check still being
+    # printed, a wire that was returned, a transfer not yet deposited. Named
+    # `status` on some types and `state` on others.
+    STATUS_PATHS = [
+      %w[transfer status],
+      %w[check status],
+      %w[check_deposit status],
+      %w[wire_transfer state],
+      %w[wise_transfer state]
+    ].freeze
+
     SENT_AT_PATHS = [
       %w[donation donated_at],
       %w[ach_transfer created_at],
@@ -110,21 +143,48 @@ module Hcb
         @raw.dig("wise_transfer", "recipient_name") ||
         @raw.dig("invoice", "sponsor", "name") ||
         @raw.dig("card_charge", "merchant", "smart_name") ||
-        @raw.dig("card_charge", "merchant", "name")
+        @raw.dig("card_charge", "merchant", "name") ||
+        transfer_counterparty
     end
 
+    # See REASON_PATHS. Blank rather than nil isn't hypothetical here -- HCB
+    # returns "" for a `payment_for` nobody filled in -- so this can't be a
+    # plain `||` chain, which would stop at the empty one.
+    def reason = REASON_PATHS.filter_map { |path| @raw.dig(*path).presence }.first
+
+    # See STATUS_PATHS. Underscored in the API ("in_transit"); read as words.
+    def status_label = STATUS_PATHS.filter_map { |path| @raw.dig(*path).presence }.first&.tr("_", " ")&.capitalize
+
     def decline_reason = @raw.dig("card_charge", "decline_reason")
+
+    # Wise is the one type whose failures come back with an explanation
+    # attached -- nothing else in v4 has an equivalent, and #status_label alone
+    # would only say "Returned".
+    def return_reason = @raw.dig("wise_transfer", "return_reason")
 
     def as_json(*)
       {
         id: id, date: date, settled_date: settled_date, memo: memo, amount: amount,
         direction: direction, tags: tags, user_name: user_name, category_label: category_label,
-        recipient_name: recipient_name, pending: pending?, declined: declined?, reversed: reversed?,
-        missing_receipt: missing_receipt?, lost_receipt: lost_receipt?, decline_reason: decline_reason
+        recipient_name: recipient_name, reason: reason, pending: pending?, declined: declined?,
+        reversed: reversed?, missing_receipt: missing_receipt?, lost_receipt: lost_receipt?,
+        status_label: status_label, decline_reason: decline_reason, return_reason: return_reason
       }
     end
 
     private
+
+    # A disbursement's counterparty is the organization at the other end, which
+    # side depending on which way the money went -- v4 puts both `from` and `to`
+    # on both copies of the transfer. Without this a transfer is the one type
+    # whose detail view names nobody at all: its `sender` is the HCB user who
+    # requested it (already #user_name), and there's no recipient_name field.
+    def transfer_counterparty
+      transfer = @raw["transfer"]
+      return nil if transfer.blank?
+
+      direction == "out" ? transfer.dig("to", "name") : transfer.dig("from", "name")
+    end
 
     def sent_at
       _key, raw_value = SENT_AT_PATHS.map { |type, field| [ type, @raw.dig(type, field) ] }.find { |_, v| v }

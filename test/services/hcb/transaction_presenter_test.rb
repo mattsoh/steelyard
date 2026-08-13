@@ -55,7 +55,8 @@ class Hcb::TransactionPresenterTest < ActiveSupport::TestCase
 
     assert_equal %i[
       id date settled_date memo amount direction tags user_name category_label
-      recipient_name pending declined reversed missing_receipt lost_receipt decline_reason
+      recipient_name reason pending declined reversed missing_receipt lost_receipt
+      status_label decline_reason return_reason
     ].sort, json.keys.sort
   end
 
@@ -103,5 +104,82 @@ class Hcb::TransactionPresenterTest < ActiveSupport::TestCase
 
     card = Hcb::TransactionPresenter.new({ "id" => "txn_15", "amount_cents" => -100, "card_charge" => { "merchant" => { "name" => "COFFEE SHOP #123", "smart_name" => "Coffee Shop" } } })
     assert_equal "Coffee Shop", card.recipient_name
+  end
+
+  test "recipient_name reads the organization at the other end of a transfer, whichever way the money went" do
+    transfer = { "from" => { "name" => "Sending Org" }, "to" => { "name" => "Receiving Org" } }
+
+    outgoing = Hcb::TransactionPresenter.new({ "id" => "txn_16", "amount_cents" => -100, "transfer" => transfer })
+    assert_equal "Receiving Org", outgoing.recipient_name
+
+    incoming = Hcb::TransactionPresenter.new({ "id" => "txn_17", "amount_cents" => 100, "transfer" => transfer })
+    assert_equal "Sending Org", incoming.recipient_name
+  end
+
+  test "reason reads whichever field this transaction's type files it under" do
+    {
+      "ach_transfer" => { "payment_for" => "Venue deposit" },
+      "check" => { "payment_for" => "Printing" },
+      "wire_transfer" => { "payment_for" => "Speaker travel" },
+      "wise_transfer" => { "payment_for" => "Translator" },
+      "transfer" => { "memo" => "Hardware grant" },
+      "invoice" => { "description" => "Gold sponsorship" },
+      "donation" => { "message" => "Good luck!" }
+    }.each do |type, sub_object|
+      presenter = Hcb::TransactionPresenter.new({ "id" => "txn_18", "amount_cents" => -100, type => sub_object })
+
+      assert_equal sub_object.values.first, presenter.reason, "expected #{type} to supply the reason"
+    end
+  end
+
+  # The whole point of surfacing it separately: on the receiving side HCB
+  # rewrites the transaction memo, so the nested transfer is the only copy of
+  # the sender's stated purpose the destination org can see.
+  test "reason keeps an incoming transfer's stated purpose, which its memo no longer carries" do
+    presenter = Hcb::TransactionPresenter.new({
+      "id" => "txn_19", "amount_cents" => 1_000, "memo" => "Transfer from Daydream",
+      "transfer" => { "memo" => "🛠️ Testing transparency API" }
+    })
+
+    assert_equal "🛠️ Testing transparency API", presenter.reason
+  end
+
+  test "reason skips a field HCB returned empty rather than absent" do
+    presenter = Hcb::TransactionPresenter.new({
+      "id" => "txn_20", "amount_cents" => -100,
+      "check" => { "payment_for" => "" }, "invoice" => { "description" => "Booth fee" }
+    })
+
+    assert_equal "Booth fee", presenter.reason
+  end
+
+  test "reason is nil for a type that has nothing like it, e.g. a card charge" do
+    presenter = Hcb::TransactionPresenter.new({ "id" => "txn_21", "amount_cents" => -100, "card_charge" => { "merchant" => { "name" => "COFFEE SHOP" } } })
+
+    assert_nil presenter.reason
+  end
+
+  test "status_label reads the type's own state and reads it as words" do
+    transfer = Hcb::TransactionPresenter.new({ "id" => "txn_22", "amount_cents" => 100, "transfer" => { "status" => "completed" } })
+    assert_equal "Completed", transfer.status_label
+
+    wire = Hcb::TransactionPresenter.new({ "id" => "txn_23", "amount_cents" => -100, "wire_transfer" => { "state" => "in_transit" } })
+    assert_equal "In transit", wire.status_label
+
+    fee = Hcb::TransactionPresenter.new({ "id" => "txn_24", "amount_cents" => -100 })
+    assert_nil fee.status_label
+  end
+
+  test "return_reason is only carried by Wise transfers, which are the only ones HCB explains" do
+    wise = Hcb::TransactionPresenter.new({
+      "id" => "txn_25", "amount_cents" => -100,
+      "wise_transfer" => { "state" => "returned", "return_reason" => "Recipient account closed" }
+    })
+
+    assert_equal "Returned", wise.status_label
+    assert_equal "Recipient account closed", wise.return_reason
+
+    check = Hcb::TransactionPresenter.new({ "id" => "txn_26", "amount_cents" => -100, "check" => { "status" => "in_transit" } })
+    assert_nil check.return_reason
   end
 end

@@ -45,6 +45,19 @@ function commentHtml(c) {
   return `<div class="detail-comment"><strong>${author}:</strong>${adminHtml} ${escapeHtml(c.content)}${fileHtml}${dateHtml}</div>`;
 }
 
+// Whether the transaction's reason (see TransactionPresenter::REASON_PATHS) is
+// telling the reader anything its memo hasn't already. Most transfers are named
+// by HCB rather than by a person, and those names restate the memo: a received
+// transfer's memo is "Transfer from <org>" where the transfer's own name is
+// "Transfer from <org> to <org>". A row saying the same thing twice is worse
+// than no row -- while a grant arriving as "💰 Hackathon grant from Hack Club"
+// behind a memo of "Transfer from Hack Club HQ" is the whole point of the field.
+function reasonAddsToMemo(t) {
+  if (!t.reason) return false;
+  if (!t.memo) return true;
+  return !t.reason.startsWith(t.memo) && !t.memo.startsWith(t.reason);
+}
+
 // Field label -> value, in display order. Shared by the initial render and the
 // re-render after a refresh, and by the diff that reports what a refresh
 // changed, so all three can't drift apart.
@@ -53,6 +66,10 @@ function detailFields(t) {
   if (t.pending) statusParts.push("Pending");
   if (t.declined) statusParts.push("Declined" + (t.decline_reason ? ` (${t.decline_reason})` : ""));
   if (t.reversed) statusParts.push("Reversed");
+  // The type's own progress -- a check still being printed, a transfer not yet
+  // deposited, a wire that came back. HCB tracks it separately from the flags
+  // above, and only Wise says why it came back.
+  if (t.status_label) statusParts.push(t.status_label + (t.return_reason ? ` (${t.return_reason})` : ""));
   if (t.missing_receipt) statusParts.push("Missing receipt");
   if (t.lost_receipt) statusParts.push("Lost receipt");
 
@@ -60,6 +77,11 @@ function detailFields(t) {
     ["Amount", fmtDetail(t.amount)],
     ["Date", t.date],
     ["Memo", t.memo],
+    // What the money was for, as whoever moved it described it: a transfer's
+    // stated purpose, a check or wire's "payment for", an invoice's line item,
+    // a donor's message. Sits right under the memo because it's the same kind
+    // of answer -- and drops out when it would only repeat it.
+    ...(reasonAddsToMemo(t) ? [ [ "Reason", t.reason ] ] : []),
     ["Tags", t.tags],
     ["User", t.user_name],
     ["Recipient", t.recipient_name],
