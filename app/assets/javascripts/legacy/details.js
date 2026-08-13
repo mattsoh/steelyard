@@ -20,6 +20,10 @@ async function handledReauthRequired(res) {
   } catch (e) {
     return false;
   }
+  // Nobody chose this navigation, so it shouldn't have to get past the matcher's
+  // unsaved-work prompt. The tray survives it either way -- it's saved to
+  // localStorage as it's built, and restored after logging back in.
+  if (typeof allowNavigationWithoutWarning === "function") allowNavigationWithoutWarning();
   window.location.href = "/";
   return true;
 }

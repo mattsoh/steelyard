@@ -106,6 +106,47 @@ function restoreTraySnapshot() {
   }
 }
 
+// Work a navigation would walk away from: anything sitting in the tray
+// unconfirmed (including a match being edited and a selection stashed behind
+// that edit), the copy a full reload has parked, and a save still in flight.
+// Deliberately nothing else -- the cutoff and every match action are written to
+// the server as they happen, and the search/sort/width controls are just a view.
+function hasUnconfirmedMatch() {
+  return selectedIncomingIds.length > 0 ||
+    selectedOutgoingIds.length > 0 ||
+    editingMatchId !== null ||
+    !!stashedSelection ||
+    !!parkedTraySnapshot ||
+    matchBusy;
+}
+
+// Set when the page itself is sending the browser somewhere -- see details.js's
+// re-login redirect. Nobody should be asked to confirm a navigation they didn't
+// choose, least of all one they can't avoid.
+let navigatingAway = false;
+
+function allowNavigationWithoutWarning() {
+  navigatingAway = true;
+}
+
+// The browser's own "leave site?" prompt, on a link click, a back, or a tab
+// close. Its wording isn't ours to set -- browsers ignore any custom message --
+// so all a page can do is say whether there's anything worth interrupting for.
+// Stays quiet unless the tray actually holds something, which is what keeps it
+// from crying wolf on every trip to the ledger.
+window.addEventListener("beforeunload", (e) => {
+  if (navigatingAway || !hasUnconfirmedMatch()) return;
+  e.preventDefault();
+  e.returnValue = ""; // Safari and older Chrome still key off this rather than preventDefault
+});
+
+// Belt and braces under the prompt: whether or not someone stays, the tray goes
+// to disk on the way out, so coming back restores it (see restoreTraySnapshot).
+// render() has already saved every change by this point -- this is here for the
+// change that somehow didn't render. pagehide rather than unload, which some
+// browsers fire unreliably and iOS not at all.
+window.addEventListener("pagehide", saveTraySnapshot);
+
 const FILTER_STORAGE_KEY = `steelyard.matcherFilters.${window.HCB_ORGANIZATION_ID}`;
 const FILTER_FIELD_IDS = [
   "search-incoming", "search-incoming-amount", "search-incoming-after", "search-incoming-before",
