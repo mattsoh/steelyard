@@ -3,13 +3,16 @@
 class FakeHcbClient
   attr_reader :transactions_calls, :user_id
 
-  def initialize(transactions: [], members: [], user: {}, organizations: [], user_id: nil)
+  # `comments` is keyed by transaction id, matching HCB's per-transaction
+  # comments endpoint; anything not listed simply has none.
+  def initialize(transactions: [], members: [], user: {}, organizations: [], user_id: nil, comments: {})
     @transactions = transactions
     @members = members
     @user = user
     @organizations = organizations
     @transactions_calls = 0
     @user_id = user_id
+    @comments = comments
   end
 
   def user = @user
@@ -52,5 +55,9 @@ class FakeHcbClient
 
   def transaction(id)
     @transactions.find { |t| t["id"] == id }
+  end
+
+  def comments(transaction_id)
+    @comments.fetch(transaction_id, [])
   end
 end

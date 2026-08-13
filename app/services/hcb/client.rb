@@ -29,7 +29,12 @@ module Hcb
     end
 
     def transaction(id) = get("/api/v4/transactions/#{id}")
-    def comments(transaction_id) = get("/api/v4/transactions/#{transaction_id}/comments")
+
+    # HCB serves comments off a shallow, query-parameterized route rather than
+    # nesting them under the transaction: /api/v4/transactions/:id/comments
+    # doesn't exist and falls through to the v4 catch-all as a 404. (There is a
+    # nested form, but only under an organization, and it's deprecated.)
+    def comments(transaction_id) = get("/api/v4/comments", transaction_id: transaction_id)
 
     private
 
