@@ -70,6 +70,8 @@ function dateInRange(date, after, before) {
   return true;
 }
 
+const LOADING_HTML = `<div class="empty-msg loading-msg"><span class="loading-spinner"></span>Loading transactions…</div>`;
+
 function showLedgerMessage(html) {
   document.getElementById("ledger-body").innerHTML = `<tr><td colspan="6">${html}</td></tr>`;
 }
@@ -112,7 +114,7 @@ function memoOrCodeMatches(r, query) {
 }
 
 async function load() {
-  showLedgerMessage(`<div class="empty-msg loading-msg"><span class="loading-spinner"></span>Loading transactions…</div>`);
+  showLedgerMessage(LOADING_HTML);
   provisional = [];
   let lastTotalCount = null;
   let data, matchData;
@@ -155,7 +157,7 @@ async function load() {
       ev.preventDefault();
       load();
     });
-    return;
+    return false;
   }
 
   applyMatches(matchData.matches);
@@ -174,6 +176,7 @@ async function load() {
   renderCutoffSelect();
 
   render();
+  return true;
 }
 
 // Reloads the authoritative ledger in place, leaving the current table on
@@ -292,6 +295,28 @@ async function refreshTransactions({ announce }) {
   }
 }
 
+// Drops everything the drain is about to replace and puts the table back in the
+// state a cold load starts in. Unlike a sync (which updates the table around
+// whoever is reading it), a full reload throws the server's entire drain away
+// and rebuilds it -- and these rows are the ones whoever pressed the button has
+// decided not to trust, so they don't get to sit there looking current, with a
+// running balance computed from them, for the minutes it takes. load() streams
+// them back in afterwards.
+function clearForFullReload() {
+  // The modal is showing one of the rows being thrown away, and its refresh
+  // button would splice a value into a ledger that no longer holds it.
+  hideDetailsModal();
+
+  ledger = [];
+  provisional = [];
+  matchedIds = new Set();
+  discrepancyIds = new Set();
+
+  document.getElementById("stat-final-balance").textContent = "—";
+  document.getElementById("stat-count").textContent = "—";
+  showLedgerMessage(LOADING_HTML);
+}
+
 // The expensive escape hatch: re-reads the org's entire history from HCB, for
 // when an older transaction changed in a way the incremental drain keeps
 // splicing back over. Confirmed first (see FULL_RELOAD_WARNING) because the
@@ -304,21 +329,31 @@ async function fullReloadTransactionsAndRender() {
   setSyncButtonsDisabled(true);
   setSyncNote("full reload started…");
 
+  let started = false;
   try {
     const changed = await fullReloadTransactions({
-      onSyncing: () => setSyncNote("re-reading full history from HCB — this can take a few minutes…"),
+      onSyncing: () => {
+        started = true;
+        setSyncNote("re-reading full history from HCB — this can take a few minutes…");
+        clearForFullReload();
+      },
     });
-    // The drain runs server-side, so giving up waiting isn't the same as it
-    // failing -- it's still going, and any later load will pick it up.
-    if (!changed) {
-      setSyncNote("still running — reload this page in a few minutes to see the result");
+    // Nothing was cleared and nothing is running: the request itself failed, so
+    // the table is still showing the data it loaded with.
+    if (!started) {
+      setSyncNote("could not start the full reload — try again");
       return;
     }
-    if (!(await reloadInPlace())) {
-      setSyncNote("full reload finished, but this page couldn't update — reload the page");
+
+    // Loaded from scratch either way. Giving up waiting isn't the same as the
+    // drain failing -- it's still going server-side -- but the table has been
+    // cleared by now, so it re-streams whatever the server currently has rather
+    // than sitting empty until someone refreshes the browser.
+    if (!(await load())) {
+      setSyncNote("full reload finished, but this page couldn't load it — reload the page");
       return;
     }
-    setSyncNote("full reload complete");
+    setSyncNote(changed ? "full reload complete" : "still running — reload this page in a few minutes to see the result");
   } finally {
     transactionsRefreshing = false;
     setSyncButtonsDisabled(false);

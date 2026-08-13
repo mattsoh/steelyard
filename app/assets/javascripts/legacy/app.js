@@ -30,6 +30,13 @@ let lastIncomingClickId = null;
 let lastOutgoingClickId = null;
 let matchBusy = false;
 let traySnapshotRestored = false;
+// True from the moment a full reload is accepted by the server until the
+// re-stream that follows it has finished -- see clearForFullReload.
+let restreamingFullReload = false;
+// The tray snapshot that full reload parked, held here (rather than read back
+// out of localStorage) so an in-progress match survives the re-stream even if
+// the re-stream itself fails and the page carries on without one.
+let parkedTraySnapshot = null;
 
 const TRAY_STORAGE_KEY = `steelyard.tray.${window.HCB_ORGANIZATION_ID}`;
 
@@ -40,6 +47,11 @@ const TRAY_STORAGE_KEY = `steelyard.tray.${window.HCB_ORGANIZATION_ID}`;
 // landed, so stale ids (matched or deleted elsewhere in the meantime) can be
 // filtered out rather than silently re-selected.
 function saveTraySnapshot() {
+  // A full reload empties the tray on screen along with everything else while
+  // the drain runs (see clearForFullReload). That empty tray isn't what anyone
+  // chose, so it isn't written back: the stored snapshot is shared with every
+  // other tab on this organization, and saving an empty tray deletes it.
+  if (restreamingFullReload) return;
   try {
     if (selectedIncomingIds.length === 0 && selectedOutgoingIds.length === 0 && editingMatchId === null && !stashedSelection) {
       localStorage.removeItem(TRAY_STORAGE_KEY);
@@ -60,7 +72,8 @@ function restoreTraySnapshot() {
   traySnapshotRestored = true;
   let snap;
   try {
-    const raw = localStorage.getItem(TRAY_STORAGE_KEY);
+    const raw = parkedTraySnapshot ?? localStorage.getItem(TRAY_STORAGE_KEY);
+    parkedTraySnapshot = null;
     if (!raw) return;
     snap = JSON.parse(raw);
   } catch (e) {
@@ -230,7 +243,7 @@ async function loadAll() {
         loadAll();
       });
     });
-    return;
+    return false;
   }
   clearLoadProgress();
   allTransactions = txData.transactions;
@@ -244,6 +257,7 @@ async function loadAll() {
 
   restoreTraySnapshot();
   render();
+  return true;
 }
 
 // Reloads the authoritative views in place, leaving what's currently rendered
@@ -359,6 +373,45 @@ async function refreshTransactions({ announce }) {
   }
 }
 
+// Drops everything the drain is about to replace and puts the page back in the
+// state a cold load starts in: no transactions, no matches, lists showing their
+// loading state. Unlike a sync (which patches new rows in around whatever
+// someone is doing), a full reload throws the server's entire drain away and
+// rebuilds it -- and the rows on screen are the ones whoever pressed the button
+// has decided not to trust, so they don't get to sit there looking current for
+// the minutes it takes. loadAll() streams them back in afterwards.
+//
+// The tray is parked rather than discarded: its snapshot is held aside and
+// loadAll's restoreTraySnapshot puts the selection back once there are fresh
+// transactions to validate it against -- exactly what refreshing the browser
+// mid-match does.
+function clearForFullReload() {
+  restreamingFullReload = true;
+  try {
+    parkedTraySnapshot = localStorage.getItem(TRAY_STORAGE_KEY);
+  } catch (e) {}
+  // The modal is showing one of the rows being thrown away, and its refresh
+  // button would splice a value into state that no longer holds it.
+  hideDetailsModal();
+
+  allTransactions = [];
+  byId = new Map();
+  matches = [];
+  transactionsLoaded = false;
+
+  selectedIncomingIds = [];
+  selectedOutgoingIds = [];
+  lastIncomingClickId = null;
+  lastOutgoingClickId = null;
+  editingMatchId = null;
+  editingMatchOriginal = null;
+  stashedSelection = null;
+  traySnapshotRestored = false;
+
+  clearLoadProgress();
+  render();
+}
+
 // The expensive escape hatch: re-reads the org's entire history from HCB, for
 // when an older transaction changed in a way the incremental drain keeps
 // splicing back over. Confirmed first (see FULL_RELOAD_WARNING) because the
@@ -371,22 +424,33 @@ async function fullReloadTransactionsAndRender() {
   setSyncButtonsDisabled(true);
   setSyncNote("full reload started…");
 
+  let started = false;
   try {
     const changed = await fullReloadTransactions({
-      onSyncing: () => setSyncNote("re-reading full history from HCB — this can take a few minutes…"),
+      onSyncing: () => {
+        started = true;
+        setSyncNote("re-reading full history from HCB — this can take a few minutes…");
+        clearForFullReload();
+      },
     });
-    // The drain runs server-side, so giving up waiting isn't the same as it
-    // failing -- it's still going, and any later load will pick it up.
-    if (!changed) {
-      setSyncNote("still running — reload this page in a few minutes to see the result");
+    // Nothing was cleared and nothing is running: the request itself failed, so
+    // the page is still showing the data it loaded with.
+    if (!started) {
+      setSyncNote("could not start the full reload — try again");
       return;
     }
-    if (!(await reloadInPlace())) {
-      setSyncNote("full reload finished, but this page couldn't update — reload the page");
+
+    // Loaded from scratch either way. Giving up waiting isn't the same as the
+    // drain failing -- it's still going server-side -- but the page has been
+    // cleared by now, so it re-streams whatever the server currently has rather
+    // than sitting empty until someone refreshes the browser.
+    if (!(await loadAll())) {
+      setSyncNote("full reload finished, but this page couldn't load it — reload the page");
       return;
     }
-    setSyncNote("full reload complete");
+    setSyncNote(changed ? "full reload complete" : "still running — reload this page in a few minutes to see the result");
   } finally {
+    restreamingFullReload = false;
     transactionsRefreshing = false;
     setSyncButtonsDisabled(false);
   }
@@ -900,6 +964,21 @@ function renderMatchGroup(group, listId, countId, emptyMsg) {
 }
 
 function renderMatches() {
+  // Every match row is drawn from byId -- its legs *are* transactions -- so
+  // before any of them have arrived there's nothing truthful to show: rows
+  // would render with both sides empty, and the empty state would claim the
+  // organization has no matches. Both say "loading" instead. On a normal load
+  // that's a blink; through a full reload's drain it's minutes.
+  if (!transactionsLoaded && allTransactions.length === 0) {
+    for (const id of ["matches-unbalanced-count", "matches-balanced-count"]) {
+      document.getElementById(id).textContent = "—";
+    }
+    for (const id of ["matches-unbalanced-list", "matches-balanced-list"]) {
+      document.getElementById(id).innerHTML = LOADING_HTML;
+    }
+    return;
+  }
+
   const unbalanced = matches.filter((m) => m.discrepancy !== 0);
   const balanced = matches.filter((m) => m.discrepancy === 0);
 

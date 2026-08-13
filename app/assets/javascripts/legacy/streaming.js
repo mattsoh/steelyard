@@ -95,9 +95,15 @@ async function syncNewTransactions({ onSyncing } = {}) {
 // callers confirm with the user first -- it's the escape hatch for a cached
 // transaction that changed too far back for an incremental drain to notice.
 //
-// Same contract as syncNewTransactions: resolves true only once the server has
-// actually published fresher data, never throws, and leaves the current rows on
-// screen while it runs.
+// Same contract as syncNewTransactions for the result: resolves true only once
+// the server has actually published fresher data, and never throws. Unlike it,
+// this doesn't try to keep the current rows usable while it runs -- everything
+// the drain is replacing is exactly what someone reaching for this button has
+// decided not to trust, so onSyncing is where callers clear their view and
+// re-load it from scratch once this resolves. onSyncing firing is also the
+// signal that the server accepted the reload: it's skipped entirely when the
+// request itself failed, so a caller can tell "never started" from "started and
+// still running".
 async function fullReloadTransactions({ onSyncing } = {}) {
   let started;
   try {
@@ -124,6 +130,7 @@ const FULL_RELOAD_WARNING =
   "Full reload re-reads this organization's entire transaction history from HCB.\n\n" +
   "It is slow (minutes, on a large organization) and uses a big share of the HCB rate limit everyone here shares. " +
   "“Check for new” already picks up new and recently-changed transactions — only use this if you think an older transaction changed.\n\n" +
+  "This page clears its transactions while the reload runs, then loads the fresh copy from scratch when it lands.\n\n" +
   "Start the full reload?";
 
 // Polls the cache-only status endpoint (which never touches HCB, so polling it
