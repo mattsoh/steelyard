@@ -21,6 +21,22 @@ class MatcherControllerTest < ActionController::TestCase
     assert_includes response.body, "Loading transactions"
   end
 
+  # The CSV exports are built client-side from rows the page has already
+  # loaded, so all the server owes them is the buttons -- disabled, because
+  # nothing is loaded yet when the shell is served.
+  test "the CSV download buttons are rendered, disabled until data lands" do
+    stub_membership("member") do
+      get :show, params: { organization_id: "org_1" }
+    end
+
+    %w[
+      btn-download-unmatched-in btn-download-unmatched-out
+      btn-download-balanced btn-download-unbalanced
+    ].each do |id|
+      assert_match(/id="#{id}"[^>]*disabled/, response.body)
+    end
+  end
+
   test "a non-member gets the same not-found response as a nonexistent org" do
     stub_membership(nil) do
       get :show, params: { organization_id: "org_1" }

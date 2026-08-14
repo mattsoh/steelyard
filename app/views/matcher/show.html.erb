@@ -19,6 +19,18 @@
         <button type="button" id="btn-full-reload" class="secondary" title="Re-read this organization's entire transaction history from HCB. Slow, and heavy on the HCB rate limit everyone shares — only needed when an older transaction has changed.">⟳ Full reload</button>
       </span>
     </div>
+    <%# Built from the rows already on the page (see csv.js), so they cost no HCB
+        requests. Disabled until there is something behind them to export --
+        app.js's updateDownloadButtons re-decides that on every render. %>
+    <div class="stat">
+      <span class="label">Download CSV</span>
+      <span class="value stat-buttons">
+        <button type="button" id="btn-download-unmatched-in" class="secondary" disabled title="Download every unmatched incoming transaction as a CSV — the whole set, not just what the search filters leave showing">↓ Unmatched in</button>
+        <button type="button" id="btn-download-unmatched-out" class="secondary" disabled title="Download every unmatched outgoing transaction as a CSV — the whole set, not just what the search filters leave showing">↓ Unmatched out</button>
+        <button type="button" id="btn-download-balanced" class="secondary" disabled title="Download every balanced match as a CSV, one row per transaction in the match">↓ Balanced</button>
+        <button type="button" id="btn-download-unbalanced" class="secondary" disabled title="Download every unbalanced match as a CSV, one row per transaction in the match">↓ Unbalanced</button>
+      </span>
+    </div>
   </div>
 
   <div class="stats-row">

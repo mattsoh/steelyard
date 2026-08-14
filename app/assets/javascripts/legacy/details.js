@@ -58,21 +58,27 @@ function reasonAddsToMemo(t) {
   return !t.reason.startsWith(t.memo) && !t.memo.startsWith(t.reason);
 }
 
+// Everything HCB says about where the transaction stands, as one phrase. Also
+// read by the CSV exports (csv.js), so a status someone reads in the modal says
+// the same thing in a downloaded file.
+function transactionStatusText(t) {
+  const parts = [];
+  if (t.pending) parts.push("Pending");
+  if (t.declined) parts.push("Declined" + (t.decline_reason ? ` (${t.decline_reason})` : ""));
+  if (t.reversed) parts.push("Reversed");
+  // The type's own progress -- a check still being printed, a transfer not yet
+  // deposited, a wire that came back. HCB tracks it separately from the flags
+  // above, and only Wise says why it came back.
+  if (t.status_label) parts.push(t.status_label + (t.return_reason ? ` (${t.return_reason})` : ""));
+  if (t.missing_receipt) parts.push("Missing receipt");
+  if (t.lost_receipt) parts.push("Lost receipt");
+  return parts.join(", ");
+}
+
 // Field label -> value, in display order. Shared by the initial render and the
 // re-render after a refresh, and by the diff that reports what a refresh
 // changed, so all three can't drift apart.
 function detailFields(t) {
-  const statusParts = [];
-  if (t.pending) statusParts.push("Pending");
-  if (t.declined) statusParts.push("Declined" + (t.decline_reason ? ` (${t.decline_reason})` : ""));
-  if (t.reversed) statusParts.push("Reversed");
-  // The type's own progress -- a check still being printed, a transfer not yet
-  // deposited, a wire that came back. HCB tracks it separately from the flags
-  // above, and only Wise says why it came back.
-  if (t.status_label) statusParts.push(t.status_label + (t.return_reason ? ` (${t.return_reason})` : ""));
-  if (t.missing_receipt) statusParts.push("Missing receipt");
-  if (t.lost_receipt) statusParts.push("Lost receipt");
-
   return [
     ["Amount", fmtDetail(t.amount)],
     ["Date", t.date],
@@ -86,7 +92,7 @@ function detailFields(t) {
     ["User", t.user_name],
     ["Recipient", t.recipient_name],
     ["Category", t.category_label],
-    ["Status", statusParts.join(", ")],
+    ["Status", transactionStatusText(t)],
     // Only shown when the transaction has settled on a date other than the
     // one it was sent on -- most transactions clear same-day, so this only
     // adds noise for the ones (ACH, checks) where the two actually diverge.

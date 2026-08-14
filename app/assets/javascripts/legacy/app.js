@@ -516,6 +516,7 @@ function render() {
   renderLists();
   renderTray();
   renderMatches();
+  updateDownloadButtons();
   saveTraySnapshot();
 }
 
@@ -1020,11 +1021,98 @@ function renderMatches() {
     return;
   }
 
-  const unbalanced = matches.filter((m) => m.discrepancy !== 0);
-  const balanced = matches.filter((m) => m.discrepancy === 0);
+  renderMatchGroup(unbalancedMatches(), "matches-unbalanced-list", "matches-unbalanced-count", "No discrepancies 🎉");
+  renderMatchGroup(balancedMatches(), "matches-balanced-list", "matches-balanced-count", "No balanced matches yet.");
+}
 
-  renderMatchGroup(unbalanced, "matches-unbalanced-list", "matches-unbalanced-count", "No discrepancies 🎉");
-  renderMatchGroup(balanced, "matches-balanced-list", "matches-balanced-count", "No balanced matches yet.");
+// The two buckets the page splits matches into, shared by the sections that
+// render them and the buttons that export them, so a match can't be counted as
+// balanced on screen and unbalanced in a downloaded file. A match being edited
+// is in neither: editMatch pulls it out of `matches` entirely while it sits in
+// the tray, unsaved.
+function balancedMatches() {
+  return matches.filter((m) => m.discrepancy === 0);
+}
+
+function unbalancedMatches() {
+  return matches.filter((m) => m.discrepancy !== 0);
+}
+
+// The match-level columns each of a match's legs repeats in the CSV; the leg's
+// own columns (shared with the transaction exports) follow them. See csv.js.
+const MATCH_CSV_COLUMNS = [
+  ["Match ID", (m) => m.id],
+  ["Discrepancy", (m) => m.discrepancy],
+  ["Spans cutoff", (m) => (m.conflict ? "yes" : "")],
+  ["Matched by", (m) => m.created_by_name],
+  ["Matched at", (m) => m.created_at],
+  ["Note", (m) => m.note],
+];
+
+// One row per leg with the match's own values repeated on each, rather than one
+// row per match with its legs crammed into a cell -- the shape a spreadsheet can
+// group, filter and sum without anyone having to split text first.
+function matchCsvRows(m) {
+  const legRow = (id, side) => [
+    ...MATCH_CSV_COLUMNS.map(([, read]) => read(m)),
+    side,
+    // A leg whose transaction isn't loaded (most likely because someone moved
+    // the cutoff past it) still gets a row carrying its id: dropping it would
+    // leave the match's legs not adding up to the discrepancy beside them, with
+    // nothing in the file to say why.
+    ...transactionCsvCells(byId.get(id) || { id, memo: "(transaction not loaded)" }),
+  ];
+
+  return [
+    ...m.incoming_ids.map((id) => legRow(id, "incoming")),
+    ...m.outgoing_ids.map((id) => legRow(id, "outgoing")),
+  ];
+}
+
+// Every unmatched transaction in that direction -- deliberately the whole set,
+// not just what the search/date filters happen to leave on screen (which is
+// what the button's title says). Ordered by the panel's own sort control, so the
+// file reads in the order the panel it came from does.
+function downloadUnmatchedCsv(direction) {
+  const rows = sortTransactions(
+    unmatchedTransactions().filter((t) => t.direction === direction),
+    document.getElementById(direction === "in" ? "sort-incoming" : "sort-outgoing").value
+  );
+
+  downloadCsv(
+    csvBasename(direction === "in" ? "unmatched-incoming" : "unmatched-outgoing"),
+    TRANSACTION_CSV_HEADERS,
+    rows.map((t) => transactionCsvCells(t))
+  );
+}
+
+// Newest match first, the same order the sections below the panels list them in.
+function downloadMatchesCsv(kind) {
+  const group = kind === "balanced" ? balancedMatches() : unbalancedMatches();
+  const sorted = [...group].sort((a, b) => b.id - a.id);
+
+  downloadCsv(
+    csvBasename(kind === "balanced" ? "balanced-matches" : "unbalanced-matches"),
+    [...MATCH_CSV_COLUMNS.map(([header]) => header), "Side", ...TRANSACTION_CSV_HEADERS],
+    sorted.flatMap(matchCsvRows)
+  );
+}
+
+// Each button is live only once there's something behind it to export. Mid-drain
+// that's never (a file saved then is a snapshot of a half-loaded page, with
+// nothing in it to say so), and an empty group would download headers with no
+// rows -- which reads as a broken button rather than as an answer.
+function updateDownloadButtons() {
+  const unmatched = transactionsLoaded ? unmatchedTransactions() : [];
+  const enabled = {
+    "btn-download-unmatched-in": unmatched.some((t) => t.direction === "in"),
+    "btn-download-unmatched-out": unmatched.some((t) => t.direction === "out"),
+    "btn-download-balanced": transactionsLoaded && balancedMatches().length > 0,
+    "btn-download-unbalanced": transactionsLoaded && unbalancedMatches().length > 0,
+  };
+  for (const [id, on] of Object.entries(enabled)) {
+    document.getElementById(id).disabled = !on;
+  }
 }
 
 let matchesRefreshing = false;
@@ -1166,6 +1254,10 @@ document.getElementById("btn-cancel").addEventListener("click", cancelMatch);
 document.getElementById("btn-refresh-matches").addEventListener("click", refreshMatches);
 document.getElementById("btn-refresh-transactions").addEventListener("click", () => refreshTransactions({ announce: true }));
 document.getElementById("btn-full-reload").addEventListener("click", fullReloadTransactionsAndRender);
+document.getElementById("btn-download-unmatched-in").addEventListener("click", () => downloadUnmatchedCsv("in"));
+document.getElementById("btn-download-unmatched-out").addEventListener("click", () => downloadUnmatchedCsv("out"));
+document.getElementById("btn-download-balanced").addEventListener("click", () => downloadMatchesCsv("balanced"));
+document.getElementById("btn-download-unbalanced").addEventListener("click", () => downloadMatchesCsv("unbalanced"));
 // Search/amount/date fields fire on every keystroke -- without debouncing,
 // each one rebuilds both full row lists (and re-renders every visible row)
 // once per character typed. Sort selects fire once per choice, so those stay
