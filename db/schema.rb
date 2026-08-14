@@ -10,18 +10,23 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_08_14_000001) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_14_000004) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
   create_table "api_tokens", force: :cascade do |t|
     t.datetime "created_at", null: false
+    t.datetime "expires_at"
     t.datetime "last_used_at"
     t.string "name", null: false
+    t.bigint "oauth_client_id"
+    t.string "refresh_token_digest"
     t.datetime "revoked_at"
+    t.string "scope"
     t.string "token_digest", null: false
     t.datetime "updated_at", null: false
     t.bigint "user_id", null: false
+    t.index ["refresh_token_digest"], name: "index_api_tokens_on_refresh_token_digest", unique: true
     t.index ["token_digest"], name: "index_api_tokens_on_token_digest", unique: true
     t.index ["user_id", "revoked_at"], name: "index_api_tokens_on_user_id_and_revoked_at"
   end
@@ -63,6 +68,34 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_14_000001) do
     t.index ["legacy_id"], name: "index_matches_on_legacy_id", unique: true
   end
 
+  create_table "oauth_authorization_codes", force: :cascade do |t|
+    t.bigint "api_token_id"
+    t.string "code_challenge", null: false
+    t.string "code_digest", null: false
+    t.datetime "consumed_at"
+    t.datetime "created_at", null: false
+    t.datetime "expires_at", null: false
+    t.bigint "oauth_client_id", null: false
+    t.string "redirect_uri", null: false
+    t.string "resource"
+    t.string "scope", null: false
+    t.datetime "updated_at", null: false
+    t.bigint "user_id", null: false
+    t.index ["code_digest"], name: "index_oauth_authorization_codes_on_code_digest", unique: true
+    t.index ["expires_at"], name: "index_oauth_authorization_codes_on_expires_at"
+  end
+
+  create_table "oauth_clients", force: :cascade do |t|
+    t.string "client_id", null: false
+    t.datetime "created_at", null: false
+    t.datetime "last_used_at"
+    t.string "name", null: false
+    t.jsonb "redirect_uris", default: [], null: false
+    t.string "secret_digest"
+    t.datetime "updated_at", null: false
+    t.index ["client_id"], name: "index_oauth_clients_on_client_id", unique: true
+  end
+
   create_table "organization_settings", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.string "hcb_organization_id", null: false
@@ -85,11 +118,14 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_14_000001) do
     t.index ["hcb_user_id"], name: "index_users_on_hcb_user_id", unique: true
   end
 
+  add_foreign_key "api_tokens", "oauth_clients"
   add_foreign_key "api_tokens", "users"
   add_foreign_key "match_adjustments", "matches"
   add_foreign_key "match_adjustments", "users", column: "created_by_user_id"
   add_foreign_key "match_transactions", "matches"
   add_foreign_key "matches", "users", column: "created_by_user_id"
   add_foreign_key "matches", "users", column: "undone_by_user_id"
+  add_foreign_key "oauth_authorization_codes", "oauth_clients"
+  add_foreign_key "oauth_authorization_codes", "users"
   add_foreign_key "organization_settings", "users", column: "updated_by_user_id"
 end

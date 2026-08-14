@@ -44,6 +44,18 @@ claude mcp add --transport http steelyard https://<host>/mcp \
   --header "Authorization: Bearer <token>"
 ```
 
+On claude.ai, add `https://<host>/mcp` as a **custom connector** — no token to paste. Steelyard is
+its own OAuth 2.1 authorization server, so the connector sends each person through HCB login and a
+consent screen, and acts as them afterwards. That means per-person roles and per-person attribution
+on matches, which a shared credential can't give you. The connection then shows up on `/api_tokens`
+as a "connected app" and is revoked from the same button as everything else.
+
+The OAuth surface: `/.well-known/oauth-protected-resource` and `/.well-known/oauth-authorization-server`
+for discovery, `POST /oauth/register` (RFC 7591 dynamic client registration), `GET|POST /oauth/authorize`
+(consent, S256 PKCE required), and `POST /oauth/token` (authorization code + refresh, rotating refresh
+tokens). Note claude.ai reaches the server from Anthropic's egress range, so a connector needs a
+publicly reachable HTTPS host — `localhost` works with Claude Code only.
+
 Tools: `list_organizations`, `get_reconciliation_summary`, `list_transactions`, `get_transaction`,
 `list_matches`, `create_match`, `undo_match`. The last two need the member or manager role, and
 `undo_match` reverses anything `create_match` did.

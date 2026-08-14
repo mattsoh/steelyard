@@ -52,8 +52,13 @@ class McpController < ApplicationController
     :unparseable
   end
 
+  # The 401 is the start of the OAuth handshake, not just a rejection: the
+  # header tells a client where to read this server's metadata, which is how a
+  # Claude connector discovers it can log the user in rather than giving up.
+  # Claude also refreshes an expired token reactively off this same response, so
+  # the pointer has to be here every time, not only on the first request.
   def render_token_error(message, status)
-    response.set_header("WWW-Authenticate", 'Bearer realm="steelyard"') if status == :unauthorized
+    response.set_header("WWW-Authenticate", Oauth::Metadata.challenge_header(request.base_url)) if status == :unauthorized
     render json: { jsonrpc: "2.0", id: nil, error: { code: -32001, message: message } }, status: status
   end
 end

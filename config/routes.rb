@@ -23,6 +23,22 @@ Rails.application.routes.draw do
   post "mcp", to: "mcp#handle"
   match "mcp", to: "mcp#unsupported", via: [ :get, :delete ]
 
+  # OAuth, so an MCP client that can't be handed a token by hand -- a Claude
+  # custom connector -- can send each person through HCB login and consent
+  # instead, and act as them afterwards. Discovery is served at both the bare
+  # well-known path and the one suffixed with the MCP endpoint's path, because
+  # clients probe for either.
+  get "/.well-known/oauth-protected-resource",     to: "oauth/metadata#protected_resource"
+  get "/.well-known/oauth-protected-resource/mcp", to: "oauth/metadata#protected_resource"
+  get "/.well-known/oauth-authorization-server",     to: "oauth/metadata#authorization_server"
+  get "/.well-known/oauth-authorization-server/mcp", to: "oauth/metadata#authorization_server"
+  get "/.well-known/openid-configuration",           to: "oauth/metadata#authorization_server"
+
+  post "oauth/register",  to: "oauth/registrations#create"
+  get  "oauth/authorize", to: "oauth/authorizations#new",    as: :oauth_authorize
+  post "oauth/authorize", to: "oauth/authorizations#create"
+  post "oauth/token",     to: "oauth/tokens#create"
+
   namespace :api do
     namespace :v1 do
       get "me", to: "me#show"

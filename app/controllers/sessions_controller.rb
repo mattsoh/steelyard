@@ -40,7 +40,7 @@ class SessionsController < ApplicationController
     )
 
     session[:user_id] = user.id
-    redirect_to organizations_path
+    redirect_to return_path_after_login
   rescue OAuth2::Error => e
     render_login_error("Login with HCB failed: #{e.message}")
   end
@@ -52,6 +52,16 @@ class SessionsController < ApplicationController
   end
 
   private
+
+  # Somewhere this app parked before sending the user off to log in -- today
+  # that's the OAuth consent screen, which a client sends people to with a URL
+  # full of parameters nobody could retype. Only ever a path this app wrote, and
+  # re-checked here anyway: a redirect target that came from outside would make
+  # the login flow a way to bounce people somewhere else entirely.
+  def return_path_after_login
+    parked = session.delete(:return_to).to_s
+    parked.start_with?("/") && !parked.start_with?("//") ? parked : organizations_path
+  end
 
   def render_login_error(message)
     render plain: "#{message}\n\nTry logging in again: #{login_url}", status: :unauthorized

@@ -1,0 +1,44 @@
+<% content_for :title, "Connect #{@client.name}" %>
+
+<div class="w-full max-w-lg mx-auto">
+  <h1 class="text-2xl font-semibold mb-2">Connect <%= @client.name %>?</h1>
+  <p class="text-gray-600 mb-6">
+    It's asking to use Steelyard as <strong><%= current_user.name.presence || current_user.email %></strong>.
+  </p>
+
+  <ul class="border border-gray-200 rounded-lg divide-y divide-gray-200 mb-6 text-sm">
+    <li class="px-4 py-3">Read transactions and matches in the HCB organizations you belong to</li>
+    <li class="px-4 py-3">
+      Create and undo matches where you're a member or manager — recorded under your name,
+      and visible to everyone else working on the organization
+    </li>
+    <li class="px-4 py-3 text-gray-500">It can't do anything you can't already do yourself.</li>
+  </ul>
+
+  <%# The MCP authorization spec asks that the destination be shown plainly:
+      it's the one thing that distinguishes the real client from something
+      local pretending to be it. %>
+  <p class="text-xs text-gray-500 mb-6">
+    After you approve, Steelyard sends the authorization to
+    <code class="bg-gray-100 rounded px-1 py-0.5"><%= URI.parse(@redirect_uri).host || @redirect_uri %></code>.
+    <% if URI.parse(@redirect_uri).host.in?(Oauth::RedirectUri::LOOPBACK_HOSTS) %>
+      That's a program running on this machine — only approve if you just started one.
+    <% end %>
+  </p>
+
+  <%# Turbo off: approving redirects to the client's own origin, and Turbo
+      Drive would try to fetch and render that cross-origin response instead of
+      letting the browser navigate to it. %>
+  <%= form_with url: oauth_authorize_path, method: :post, data: { turbo: false }, class: "flex gap-3" do |form| %>
+    <%= form.hidden_field :client_id, value: params[:client_id] %>
+    <%= form.hidden_field :redirect_uri, value: @redirect_uri %>
+    <%= form.hidden_field :response_type, value: params[:response_type] %>
+    <%= form.hidden_field :code_challenge, value: @code_challenge %>
+    <%= form.hidden_field :code_challenge_method, value: params[:code_challenge_method] %>
+    <%= form.hidden_field :scope, value: @scope %>
+    <%= form.hidden_field :state, value: params[:state] %>
+    <%= form.hidden_field :resource, value: params[:resource] %>
+    <%= form.submit "Approve", name: "approve", class: "bg-green-700 text-white rounded px-4 py-2 text-sm font-semibold cursor-pointer" %>
+    <%= form.submit "Deny", name: "deny", class: "bg-white border border-gray-300 rounded px-4 py-2 text-sm cursor-pointer" %>
+  <% end %>
+</div>

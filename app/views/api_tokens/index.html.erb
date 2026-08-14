@@ -39,9 +39,16 @@
       <% @api_tokens.each do |token| %>
         <li class="flex items-center justify-between px-4 py-3 <%= "opacity-50" if token.revoked? %>">
           <div>
-            <div class="font-medium"><%= token.name %></div>
+            <div class="font-medium">
+              <%= token.name %>
+              <%# An OAuth connection lands in this same list, so revoking a
+                  connected app is the same button as revoking a token. %>
+              <% if token.oauth? %>
+                <span class="ml-1 text-xs font-normal text-gray-500 border border-gray-300 rounded px-1.5 py-0.5">connected app</span>
+              <% end %>
+            </div>
             <div class="text-xs text-gray-500">
-              Created <%= token.created_at.to_date.to_fs(:long) %> ·
+              <%= token.oauth? ? "Connected" : "Created" %> <%= token.created_at.to_date.to_fs(:long) %> ·
               <%= token.last_used_at ? "last used #{time_ago_in_words(token.last_used_at)} ago" : "never used" %>
               <%= "· revoked" if token.revoked? %>
             </div>
@@ -62,8 +69,13 @@
     unmatched transactions, search for a counterpart, and confirm matches on your behalf.
     In Claude Code:
   </p>
-  <pre class="bg-gray-100 rounded p-3 text-xs overflow-x-auto mb-6">claude mcp add --transport http steelyard <%= "#{request.base_url}/mcp" %> \
+  <pre class="bg-gray-100 rounded p-3 text-xs overflow-x-auto mb-4">claude mcp add --transport http steelyard <%= "#{request.base_url}/mcp" %> \
   --header "Authorization: Bearer &lt;your token&gt;"</pre>
+  <p class="text-gray-600 mb-6 text-sm">
+    On claude.ai, add <code class="bg-gray-100 rounded px-1 py-0.5"><%= "#{request.base_url}/mcp" %></code>
+    as a custom connector — no token needed. It sends you back here to log in with HCB and
+    approve it, and the connection then appears above, revocable like anything else.
+  </p>
 
   <h2 class="text-lg font-semibold mb-2">Call the API directly</h2>
   <pre class="bg-gray-100 rounded p-3 text-xs overflow-x-auto">curl -H "Authorization: Bearer &lt;your token&gt;" \
