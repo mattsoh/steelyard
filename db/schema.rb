@@ -10,41 +10,53 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.0].define(version: 2026_07_02_215608) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_14_000001) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
-  create_table "match_adjustments", force: :cascade do |t|
-    t.bigint "match_id", null: false
-    t.integer "amount_cents", null: false
-    t.text "memo", null: false
-    t.bigint "created_by_user_id", null: false
+  create_table "api_tokens", force: :cascade do |t|
     t.datetime "created_at", null: false
+    t.datetime "last_used_at"
+    t.string "name", null: false
+    t.datetime "revoked_at"
+    t.string "token_digest", null: false
+    t.datetime "updated_at", null: false
+    t.bigint "user_id", null: false
+    t.index ["token_digest"], name: "index_api_tokens_on_token_digest", unique: true
+    t.index ["user_id", "revoked_at"], name: "index_api_tokens_on_user_id_and_revoked_at"
+  end
+
+  create_table "match_adjustments", force: :cascade do |t|
+    t.integer "amount_cents", null: false
+    t.datetime "created_at", null: false
+    t.bigint "created_by_user_id", null: false
+    t.bigint "match_id", null: false
+    t.text "memo", null: false
     t.datetime "updated_at", null: false
     t.index ["match_id"], name: "index_match_adjustments_on_match_id"
   end
 
   create_table "match_transactions", force: :cascade do |t|
-    t.bigint "match_id", null: false
+    t.datetime "created_at", null: false
+    t.integer "direction", default: 0, null: false
     t.string "hcb_organization_id", null: false
     t.string "hcb_transaction_id", null: false
-    t.integer "direction", default: 0, null: false
+    t.bigint "match_id", null: false
     t.datetime "undone_at"
-    t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.index ["hcb_organization_id", "hcb_transaction_id"], name: "index_match_transactions_on_active_txn_per_org", unique: true, where: "(undone_at IS NULL)"
     t.index ["match_id"], name: "index_match_transactions_on_match_id"
   end
 
   create_table "matches", force: :cascade do |t|
-    t.string "hcb_organization_id", null: false
-    t.text "note"
-    t.integer "discrepancy_cents", default: 0, null: false
+    t.datetime "created_at", null: false
     t.bigint "created_by_user_id", null: false
+    t.integer "discrepancy_cents", default: 0, null: false
+    t.string "hcb_organization_id", null: false
+    t.integer "legacy_id"
+    t.text "note"
     t.datetime "undone_at"
     t.bigint "undone_by_user_id"
-    t.integer "legacy_id"
-    t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.index ["hcb_organization_id", "undone_at"], name: "index_matches_on_hcb_organization_id_and_undone_at"
     t.index ["hcb_organization_id"], name: "index_matches_on_hcb_organization_id"
@@ -52,27 +64,28 @@ ActiveRecord::Schema[8.0].define(version: 2026_07_02_215608) do
   end
 
   create_table "organization_settings", force: :cascade do |t|
-    t.string "hcb_organization_id", null: false
-    t.string "zero_balance_transaction_id"
-    t.string "zero_balance_date"
-    t.bigint "updated_by_user_id", null: false
     t.datetime "created_at", null: false
+    t.string "hcb_organization_id", null: false
     t.datetime "updated_at", null: false
+    t.bigint "updated_by_user_id", null: false
+    t.string "zero_balance_date"
+    t.string "zero_balance_transaction_id"
     t.index ["hcb_organization_id"], name: "index_organization_settings_on_hcb_organization_id", unique: true
   end
 
   create_table "users", force: :cascade do |t|
-    t.string "hcb_user_id", null: false
-    t.string "email"
-    t.string "name"
     t.text "access_token"
+    t.datetime "created_at", null: false
+    t.string "email"
+    t.string "hcb_user_id", null: false
+    t.string "name"
     t.text "refresh_token"
     t.datetime "token_expires_at"
-    t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.index ["hcb_user_id"], name: "index_users_on_hcb_user_id", unique: true
   end
 
+  add_foreign_key "api_tokens", "users"
   add_foreign_key "match_adjustments", "matches"
   add_foreign_key "match_adjustments", "users", column: "created_by_user_id"
   add_foreign_key "match_transactions", "matches"

@@ -14,6 +14,33 @@ Rails.application.routes.draw do
   delete "logout",            to: "sessions#destroy",   as: :logout
 
   resources :organizations, only: [ :index ]
+  resources :api_tokens, only: [ :index, :create, :destroy ]
+
+  # The programmatic surfaces, both authenticated with the tokens minted above
+  # rather than a session: MCP for AI assistants, /api/v1 for everything else.
+  # Distinct from the /organizations/:id/api routes below, which exist for this
+  # app's own frontend and answer to its session cookie.
+  post "mcp", to: "mcp#handle"
+  match "mcp", to: "mcp#unsupported", via: [ :get, :delete ]
+
+  namespace :api do
+    namespace :v1 do
+      get "me", to: "me#show"
+      get "organizations", to: "organizations#index"
+
+      # Organizations are addressed by HCB id or slug, so the segment is
+      # widened from the default (which stops at a dot) -- a slug is free to
+      # contain one.
+      scope "organizations/:organization_id", constraints: { organization_id: %r{[^/]+} } do
+        get "",                 to: "organizations#show"
+        get "transactions",     to: "transactions#index"
+        get "transactions/:id", to: "transactions#show", constraints: { id: %r{[^/]+} }
+        get "matches",          to: "matches#index"
+        post "matches",         to: "matches#create"
+        delete "matches/:id",   to: "matches#destroy"
+      end
+    end
+  end
 
   scope "/organizations/:organization_id", as: :organization do
     get "matcher", to: "matcher#show", as: :matcher

@@ -1,0 +1,76 @@
+<% content_for :title, "API tokens" %>
+
+<div class="w-full max-w-2xl mx-auto pb-16">
+  <div class="flex items-center justify-between mb-6">
+    <h1 class="text-2xl font-semibold">API tokens</h1>
+    <%= link_to "← Your organizations", organizations_path, class: "text-sm text-blue-700 hover:underline" %>
+  </div>
+
+  <p class="text-gray-600 mb-6">
+    A token lets a program — a script, or an AI assistant over MCP — act as you.
+    It can read and match transactions in exactly the organizations you belong to,
+    with the same role you have there, and every match it makes is recorded under your name.
+  </p>
+
+  <% if flash[:notice] %>
+    <p class="mb-4 text-sm text-gray-600"><%= flash[:notice] %></p>
+  <% end %>
+
+  <%# Shown once, on the redirect straight after minting: only the digest is
+      stored, so this is the last time the token exists anywhere but the
+      reader's clipboard. %>
+  <% if flash[:new_api_token] %>
+    <div class="mb-6 border border-green-600 rounded-lg p-4 bg-green-50">
+      <p class="font-medium mb-2">Copy this token now — it won't be shown again.</p>
+      <code class="block w-full break-all bg-white border border-green-200 rounded px-3 py-2 text-sm"><%= flash[:new_api_token] %></code>
+    </div>
+  <% end %>
+
+  <%= form_with url: api_tokens_path, method: :post, class: "flex gap-2 mb-8" do |form| %>
+    <%= form.text_field :name, placeholder: "What is it for? e.g. “Claude on my laptop”",
+          class: "flex-1 border border-gray-300 rounded px-3 py-2 text-sm" %>
+    <%= form.submit "Create token", class: "bg-green-700 text-white rounded px-4 py-2 text-sm font-semibold cursor-pointer" %>
+  <% end %>
+
+  <% if @api_tokens.empty? %>
+    <p class="text-gray-500 mb-8">No tokens yet.</p>
+  <% else %>
+    <ul class="divide-y divide-gray-200 border border-gray-200 rounded-lg overflow-hidden mb-8">
+      <% @api_tokens.each do |token| %>
+        <li class="flex items-center justify-between px-4 py-3 <%= "opacity-50" if token.revoked? %>">
+          <div>
+            <div class="font-medium"><%= token.name %></div>
+            <div class="text-xs text-gray-500">
+              Created <%= token.created_at.to_date.to_fs(:long) %> ·
+              <%= token.last_used_at ? "last used #{time_ago_in_words(token.last_used_at)} ago" : "never used" %>
+              <%= "· revoked" if token.revoked? %>
+            </div>
+          </div>
+          <% unless token.revoked? %>
+            <%= button_to "Revoke", api_token_path(token), method: :delete,
+                  form: { data: { turbo_confirm: "Revoke #{token.name}? Anything using it stops working immediately." } },
+                  class: "text-sm text-red-700 hover:underline cursor-pointer" %>
+          <% end %>
+        </li>
+      <% end %>
+    </ul>
+  <% end %>
+
+  <h2 class="text-lg font-semibold mb-2">Connect an AI assistant (MCP)</h2>
+  <p class="text-gray-600 mb-2 text-sm">
+    Steelyard speaks the Model Context Protocol over HTTP, so an assistant can look up
+    unmatched transactions, search for a counterpart, and confirm matches on your behalf.
+    In Claude Code:
+  </p>
+  <pre class="bg-gray-100 rounded p-3 text-xs overflow-x-auto mb-6">claude mcp add --transport http steelyard <%= "#{request.base_url}/mcp" %> \
+  --header "Authorization: Bearer &lt;your token&gt;"</pre>
+
+  <h2 class="text-lg font-semibold mb-2">Call the API directly</h2>
+  <pre class="bg-gray-100 rounded p-3 text-xs overflow-x-auto">curl -H "Authorization: Bearer &lt;your token&gt;" \
+  <%= "#{request.base_url}/api/v1/organizations" %></pre>
+  <p class="text-gray-500 text-xs mt-2">
+    Endpoints: <code>/api/v1/me</code>, <code>/api/v1/organizations</code>,
+    <code>/api/v1/organizations/:id</code>, <code>…/transactions</code>,
+    <code>…/transactions/:id</code>, <code>…/matches</code> (GET, POST, DELETE).
+  </p>
+</div>
