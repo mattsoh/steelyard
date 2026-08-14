@@ -10,6 +10,7 @@ module LegacyMigration
     Report = Struct.new(:created, :skipped, :dry_run, keyword_init: true)
 
     IMPORTER_HCB_USER_ID = "legacy-import".freeze
+    WHODUNNIT = "#{AuditVersion::SYSTEM_PREFIX}legacy_import".freeze
     DATE_WINDOW_DAYS = 3
 
     def initialize(client:, organization_id:, legacy_dir:, dry_run: true)
@@ -117,6 +118,16 @@ module LegacyMigration
     end
 
     def persist_match(legacy_match, resolution, importer)
+      # These matches predate this app; the versions written here are the
+      # import itself, not anyone's decision. Naming the process keeps the
+      # audit log honest about that instead of leaving whodunnit empty, which
+      # reads the same as a change nobody could account for.
+      PaperTrail.request(whodunnit: WHODUNNIT) do
+        persist_match_records(legacy_match, resolution, importer)
+      end
+    end
+
+    def persist_match_records(legacy_match, resolution, importer)
       ActiveRecord::Base.transaction do
         match = Match.create!(
           hcb_organization_id: @organization_id,

@@ -13,6 +13,13 @@ module ActiveSupport
     # Setup all fixtures in test/fixtures/*.yml for all tests in alphabetical order.
     fixtures :all
 
+    # PaperTrail keeps whodunnit in a RequestStore that its Rack middleware
+    # clears per request -- which controller tests never go through. Without
+    # this, the lambda ApplicationController installs outlives the test that
+    # set it and gets evaluated against a stale controller by whatever runs
+    # next in the same process.
+    teardown { RequestStore.clear! }
+
     # Add more helper methods to be used by all tests here...
 
     # Stubs Hcb::OrganizationMembers.role_for, which now returns a Membership

@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_08_14_000004) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_15_000001) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -116,6 +116,21 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_14_000004) do
     t.datetime "token_expires_at"
     t.datetime "updated_at", null: false
     t.index ["hcb_user_id"], name: "index_users_on_hcb_user_id", unique: true
+  end
+
+  create_table "versions", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.string "event", null: false
+    t.string "hcb_organization_id"
+    t.bigint "item_id", null: false
+    t.string "item_type", null: false
+    t.jsonb "object"
+    t.jsonb "object_changes"
+    t.string "request_id"
+    t.string "whodunnit"
+    t.index ["hcb_organization_id", "created_at"], name: "index_versions_on_hcb_organization_id_and_created_at"
+    t.index ["item_type", "item_id"], name: "index_versions_on_item_type_and_item_id"
+    t.index ["request_id"], name: "index_versions_on_request_id"
   end
 
   add_foreign_key "api_tokens", "oauth_clients"

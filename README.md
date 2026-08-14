@@ -27,6 +27,29 @@ All the secrets should be theoretically stored in `.env` (I think). An example s
 bin/rails test
 ```
 
+## Change history
+
+Every change to a match, its legs, its adjustments, and an organization's cutoff is written to the
+`versions` table by PaperTrail. There's no UI for it yet; read it from the console:
+
+```ruby
+match.versions.map { |v| [ v.created_at, v.event, v.actor_name, v.object_changes ] }
+
+# Everything one request changed -- e.g. a cutoff move and the matches it
+# cascade-undid, which is otherwise indistinguishable from unrelated undos.
+AuditVersion.for_request(version.request_id)
+
+# An organization's history, newest first.
+AuditVersion.for_organization("org_...").order(created_at: :desc)
+```
+
+`actor_name` is the person responsible, or the process where no person is: `resync` for a
+discrepancy re-derived after HCB restated a transaction (see `Matches::Resync`), `legacy_import`
+for records brought over from the pre-Rails app.
+
+This is a record, not a mechanism — nothing reads it to decide behaviour, and undoing a match is
+still `undone_at`/`undone_by_user_id` on the match itself.
+
 ## API and MCP
 
 Programs get in with a personal API token, minted at `/api_tokens` (linked from the organization

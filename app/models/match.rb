@@ -1,4 +1,6 @@
 class Match < ApplicationRecord
+  include Auditable
+
   belongs_to :created_by, class_name: "User", foreign_key: :created_by_user_id, inverse_of: :created_matches
   belongs_to :undone_by, class_name: "User", foreign_key: :undone_by_user_id, inverse_of: :undone_matches, optional: true
 

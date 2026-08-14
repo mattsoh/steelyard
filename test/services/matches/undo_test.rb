@@ -15,6 +15,18 @@ class Matches::UndoTest < ActiveSupport::TestCase
     assert @match.match_transactions.first.undone_at.present?
   end
 
+  # The legs are undone one at a time rather than in a single update_all
+  # precisely so this is true -- a bulk update skips the callback that writes
+  # them, and an undo would show up in the log as the match changing state with
+  # its legs untouched.
+  test "each leg's undo lands in the audit log" do
+    Matches::Undo.new(match: @match, user: @user).call
+
+    leg = @match.match_transactions.first
+    assert_equal "update", leg.versions.last.event
+    assert_not_nil leg.versions.last.object_changes["undone_at"].last
+  end
+
   test "frees the transaction up for a new match" do
     Matches::Undo.new(match: @match, user: @user).call
 

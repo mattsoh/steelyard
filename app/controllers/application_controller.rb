@@ -3,6 +3,7 @@ class ApplicationController < ActionController::Base
   allow_browser versions: :modern
 
   before_action :require_login!
+  before_action :set_paper_trail_whodunnit
 
   rescue_from Hcb::TokenExpiredError do
     reset_session
@@ -52,4 +53,20 @@ class ApplicationController < ActionController::Base
   def hcb_client
     @hcb_client ||= Hcb::Client.new(current_user)
   end
+
+  # Who to credit for anything Auditable writes during this request.
+  #
+  # Deliberately a lambda: PaperTrail evaluates a callable whodunnit at the
+  # moment the version row is built, not when it's assigned. That's what lets
+  # this be a plain before_action even on the token-authenticated surfaces
+  # (/api/v1, MCP), where `current_user` isn't resolved until
+  # TokenAuthenticated's `authenticate_token!` -- declared in the including
+  # class, so it runs *after* this inherited callback. Reading current_user
+  # here and now would credit every MCP-driven change to nobody.
+  def user_for_paper_trail = -> { current_user&.id&.to_s }
+
+  # Stamped on every version written while serving this request, which is how
+  # the matches a cutoff move cascade-undoes stay tied to the cutoff change
+  # that caused them (see Cutoffs::Update).
+  def info_for_paper_trail = { request_id: request.request_id }
 end

@@ -22,6 +22,9 @@ gem "jbuilder"
 # OAuth2 client for authenticating against HCB's v4 API
 gem "oauth2", "~> 2.0"
 
+# Row-level change history for matches and cutoffs [https://github.com/paper-trail-gem/paper_trail]
+gem "paper_trail", "~> 17.0"
+
 # Use Active Model has_secure_password [https://guides.rubyonrails.org/active_model_basics.html#securepassword]
 # gem "bcrypt", "~> 3.1.7"
 

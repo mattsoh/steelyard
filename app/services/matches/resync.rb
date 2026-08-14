@@ -25,6 +25,12 @@ module Matches
   class Resync
     Change = Struct.new(:match, :from_cents, :to_cents, keyword_init: true)
 
+    # Whoever happened to load the page didn't decide this match's discrepancy
+    # should move -- HCB restating a transaction did. Crediting them in the
+    # audit log would read as an edit they never made, so the versions this
+    # writes name the process instead.
+    WHODUNNIT = "#{AuditVersion::SYSTEM_PREFIX}resync".freeze
+
     def initialize(ledger:, matches:)
       @ledger = ledger
       @matches = matches
@@ -33,7 +39,9 @@ module Matches
     # Returns one Change per match whose discrepancy actually moved (empty when
     # everything still adds up, which is the overwhelmingly common case).
     def call
-      @matches.filter_map { |match| resync(match) }
+      PaperTrail.request(whodunnit: WHODUNNIT) do
+        @matches.filter_map { |match| resync(match) }
+      end
     end
 
     private
