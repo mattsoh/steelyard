@@ -21,8 +21,19 @@ const MATCH_BASE_PAGE_URL = window.FOCUS_MATCH_ID
 // and everything its history mentions), and whether opening it added a
 // history entry we can go back through.
 let matchDetailId = null;
+let matchDetailMatch = null;
 let matchDetailTransactions = {};
 let matchDetailPushedEntry = false;
+
+// The note editor, which is open over the match rather than instead of it --
+// the sides and the history stay on screen while someone writes about them.
+let matchNoteEditing = false;
+let matchNoteBusy = false;
+let matchNoteError = null;
+// What's in the box, held outside the DOM: every state change redraws the
+// popup, and a textarea rebuilt from the *saved* note would type over what
+// someone is in the middle of writing.
+let matchNoteDraft = "";
 
 const LOADING_MATCH_HTML = `<div class="empty-msg loading-msg"><span class="loading-spinner"></span>Loading match…</div>`;
 
@@ -168,15 +179,55 @@ function matchProvenanceHtml(m) {
   return `${undone}<div class="match-provenance">${created}${edited}</div>`;
 }
 
+// The note, and the means to write one. Always present, even when there's no
+// note yet -- "why is this match the shape it is" is the question the popup
+// exists to answer, and an empty section that invites an answer is worth more
+// than no section at all.
+//
+// An undone match is read-only: it isn't pairing anything any more, and the
+// server refuses to change it, so offering the button would only produce an
+// error after someone had written something.
+function matchNoteHtml(m) {
+  if (m.undone) {
+    if (!m.note) return "";
+    return `<div class="modal-field"><div class="field-label">Note</div><div class="field-value">${escapeHtml(m.note)}</div></div>`;
+  }
+
+  const errorHtml = matchNoteError ? `<div class="match-note-error">${escapeHtml(matchNoteError)}</div>` : "";
+
+  if (matchNoteEditing) {
+    return `<div class="modal-field match-note">
+      <div class="field-label">Note</div>
+      <textarea id="match-note-input" class="match-note-input" rows="3" placeholder="What is this match, and how do you know?" ${matchNoteBusy ? "disabled" : ""}>${escapeHtml(matchNoteDraft)}</textarea>
+      ${errorHtml}
+      <div class="match-note-actions">
+        <button type="button" id="match-note-save" ${matchNoteBusy ? "disabled" : ""}>${matchNoteBusy ? "Saving…" : "Save note"}</button>
+        <button type="button" class="secondary" id="match-note-cancel" ${matchNoteBusy ? "disabled" : ""}>Cancel</button>
+        <span class="match-note-hint">⌘/Ctrl + Enter saves</span>
+      </div>
+    </div>`;
+  }
+
+  const value = m.note
+    ? `<div class="field-value">${escapeHtml(m.note)}</div>`
+    : `<div class="field-value match-note-empty">No note yet.</div>`;
+  return `<div class="modal-field match-note">
+    <div class="match-note-head">
+      <div class="field-label">Note</div>
+      <button type="button" class="secondary match-note-edit" id="match-note-edit">${m.note ? "Edit note" : "Add note"}</button>
+    </div>
+    ${value}
+    ${errorHtml}
+  </div>`;
+}
+
 function matchDetailBodyHtml(m) {
   const balanced = m.discrepancy === 0;
   const statusHtml = `<span class="match-status ${balanced ? "discrepancy-ok" : "discrepancy-bad"}">${balanced ? "Balanced" : `Off by ${fmtDetail(m.discrepancy)}`}</span>`;
   const conflictHtml = m.conflict
     ? `<span class="conflict-badge" title="This match has legs on both sides of the current cutoff — one side is hidden, the other visible.">⚠ Spans cutoff</span>`
     : "";
-  const noteHtml = m.note
-    ? `<div class="modal-field"><div class="field-label">Note</div><div class="field-value">${escapeHtml(m.note)}</div></div>`
-    : "";
+  const noteHtml = matchNoteHtml(m);
   const adjustmentsHtml = (m.adjustments || []).length
     ? `<div class="modal-field"><div class="field-label">Adjustments</div><div class="field-value">${m.adjustments
         .map((a) => `${escapeHtml(a.memo)} — ${fmtDetail(a.amount)}`)
@@ -212,10 +263,112 @@ function matchDetailBodyHtml(m) {
   `;
 }
 
+// Opens the editor, saves what's in it, or puts it away. Each re-renders the
+// whole popup from the match in hand -- there's one source of truth for what's
+// on screen, and no half-updated DOM to keep in step with it.
+function resetNoteEditor() {
+  matchNoteEditing = false;
+  matchNoteBusy = false;
+  matchNoteError = null;
+  matchNoteDraft = "";
+}
+
+function startNoteEdit() {
+  matchNoteEditing = true;
+  matchNoteError = null;
+  matchNoteDraft = matchDetailMatch.note || "";
+  renderMatchDetail(matchDetailMatch);
+  const input = document.getElementById("match-note-input");
+  if (input) {
+    input.focus();
+    // Caret at the end, so editing an existing note carries on from where it
+    // left off rather than in front of what's already there.
+    input.setSelectionRange(input.value.length, input.value.length);
+  }
+}
+
+function cancelNoteEdit() {
+  matchNoteEditing = false;
+  matchNoteError = null;
+  matchNoteDraft = "";
+  renderMatchDetail(matchDetailMatch);
+}
+
+async function saveMatchNote() {
+  if (matchNoteBusy) return;
+  const id = matchDetailId;
+  const note = matchNoteDraft.trim();
+  matchNoteBusy = true;
+  matchNoteError = null;
+  renderMatchDetail(matchDetailMatch);
+
+  let saved;
+  try {
+    // Note only: the legs aren't sent, and the server leaves them exactly as
+    // they are (see Api::MatchesController#update).
+    const res = await fetch(`${MATCH_API_BASE}/api/matches/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ note: note }),
+    });
+    if (await handledReauthRequired(res)) return;
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || "Could not save this note.");
+    }
+    saved = await res.json();
+  } catch (e) {
+    matchNoteBusy = false;
+    // Nothing to draw the failure onto if they've moved on to another match;
+    // their text went with the popup either way.
+    if (matchDetailId !== id) return;
+    matchNoteError = e.message;
+    renderMatchDetail(matchDetailMatch);
+    return;
+  }
+
+  matchNoteBusy = false;
+  matchNoteEditing = false;
+  matchNoteDraft = "";
+  if (matchDetailId !== id) return;
+
+  // The response carries the match's own fields and its history, but not the
+  // resolved transactions the popup is already holding -- the legs didn't
+  // move, so what's on screen for them is still right.
+  matchDetailMatch = { ...matchDetailMatch, ...saved };
+  renderMatchDetail(matchDetailMatch);
+
+  // The page behind the popup holds its own copy of this match (the matcher
+  // lists it, and exports it), so tell it what changed rather than leaving it
+  // showing the old note until the next reload.
+  document.dispatchEvent(new CustomEvent("match:updated", { detail: matchDetailMatch }));
+}
+
+function wireNoteEditor(body) {
+  const edit = body.querySelector("#match-note-edit");
+  if (edit) edit.addEventListener("click", startNoteEdit);
+
+  const save = body.querySelector("#match-note-save");
+  if (save) save.addEventListener("click", saveMatchNote);
+
+  const cancel = body.querySelector("#match-note-cancel");
+  if (cancel) cancel.addEventListener("click", cancelNoteEdit);
+
+  const input = body.querySelector("#match-note-input");
+  if (input) {
+    input.addEventListener("input", () => { matchNoteDraft = input.value; });
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) saveMatchNote();
+    });
+  }
+}
+
 function renderMatchDetail(m) {
+  matchDetailMatch = m;
   document.getElementById("match-modal-title").textContent = `Match #${m.id}`;
   const body = document.getElementById("match-modal-body");
   body.innerHTML = matchDetailBodyHtml(m);
+  wireNoteEditor(body);
 
   // The transaction modal opens over this one, from a leg or from a leg named
   // in the history -- both are already resolved in the response, so it doesn't
@@ -236,7 +389,9 @@ async function showMatchModal(id, { updateUrl = true } = {}) {
   if (!overlay) return;
 
   matchDetailId = String(id);
+  matchDetailMatch = null;
   matchDetailTransactions = {};
+  resetNoteEditor();
   document.getElementById("match-modal-title").textContent = `Match #${id}`;
   document.getElementById("match-modal-body").innerHTML = LOADING_MATCH_HTML;
   document.getElementById("match-modal-link-note").textContent = "";
@@ -268,7 +423,9 @@ function hideMatchModal({ updateUrl = true } = {}) {
   if (!overlay || overlay.classList.contains("hidden")) return;
 
   matchDetailId = null;
+  matchDetailMatch = null;
   matchDetailTransactions = {};
+  resetNoteEditor();
   overlay.classList.add("hidden");
 
   if (!updateUrl) return;
@@ -315,6 +472,13 @@ if (document.getElementById("match-modal-overlay")) {
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
     if (!document.getElementById("detail-modal-overlay").classList.contains("hidden")) return;
+    // An open note editor is the innermost thing on screen, so it's what one
+    // Escape puts away -- closing the whole popup out from under a half-written
+    // note would throw the writing away.
+    if (matchNoteEditing) {
+      if (!matchNoteBusy) cancelNoteEdit();
+      return;
+    }
     hideMatchModal();
   }, true);
 

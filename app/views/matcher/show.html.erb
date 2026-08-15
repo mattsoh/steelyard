@@ -122,6 +122,12 @@
         <div>Outgoing selected: <span id="tray-out-amt"></span></div>
         <div id="tray-diff-row">Difference: <span id="tray-diff"></span></div>
       </div>
+      <%# Outside the lists above, which are re-rendered on every click -- text
+          being typed here has to survive selecting one more transaction. %>
+      <div class="tray-note">
+        <label class="tray-note-label" for="tray-note">Note (optional)</label>
+        <textarea id="tray-note" class="tray-note-input" rows="2" placeholder="What is this match, and how do you know?"></textarea>
+      </div>
       <div class="tray-actions">
         <button type="button" id="btn-confirm">Confirm match</button>
         <button type="button" id="btn-cancel" class="secondary">Cancel</button>

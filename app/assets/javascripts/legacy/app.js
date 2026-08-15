@@ -40,6 +40,19 @@ let parkedTraySnapshot = null;
 
 const TRAY_STORAGE_KEY = `steelyard.tray.${window.HCB_ORGANIZATION_ID}`;
 
+// The tray's note lives in the DOM rather than in a variable, because it's a
+// static field the tray's re-renders don't touch -- reading it back on save is
+// what keeps typing and re-rendering out of each other's way.
+function trayNote() {
+  const input = document.getElementById("tray-note");
+  return input ? input.value.trim() : "";
+}
+
+function setTrayNote(value) {
+  const input = document.getElementById("tray-note");
+  if (input) input.value = value || "";
+}
+
 // Persists the in-progress (unsaved) match tray to localStorage, which is
 // shared across every tab in the browser, so a refresh (or an accidental tab
 // close) doesn't throw away work someone was assembling but hadn't confirmed
@@ -63,6 +76,7 @@ function saveTraySnapshot() {
       editingMatchId,
       editingMatchOriginal,
       stashedSelection,
+      note: trayNote(),
     }));
   } catch (e) {}
 }
@@ -98,6 +112,8 @@ function restoreTraySnapshot() {
     selectedIncomingIds = selectedIncomingIds.filter((id) => !used.has(id));
     selectedOutgoingIds = selectedOutgoingIds.filter((id) => !used.has(id));
   }
+
+  setTrayNote(snap.note);
 
   if (snap.stashedSelection) {
     const incomingIds = (snap.stashedSelection.incomingIds || []).filter(validId).filter((id) => !used.has(id));
@@ -447,6 +463,7 @@ function clearForFullReload() {
   editingMatchId = null;
   editingMatchOriginal = null;
   stashedSelection = null;
+  setTrayNote("");
   traySnapshotRestored = false;
 
   clearLoadProgress();
@@ -859,7 +876,7 @@ async function confirmMatch() {
       body: JSON.stringify({
         incoming_ids: selectedIncomingIds,
         outgoing_ids: selectedOutgoingIds,
-        note: isEdit ? editingMatchOriginal.note || "" : undefined,
+        note: trayNote(),
       }),
     });
     if (!res.ok) {
@@ -873,6 +890,7 @@ async function confirmMatch() {
         editingMatchId = null;
         editingMatchOriginal = null;
         stashedSelection = null;
+        setTrayNote("");
         await loadAll();
         return;
       }
@@ -887,6 +905,7 @@ async function confirmMatch() {
     matches.push(savedMatch);
     editingMatchId = null;
     editingMatchOriginal = null;
+    setTrayNote("");
     restoreStashedSelection();
     lastIncomingClickId = null;
     lastOutgoingClickId = null;
@@ -909,6 +928,9 @@ function editMatch(id) {
   editingMatchId = id;
   editingMatchOriginal = m;
   matches = matches.filter((x) => x.id !== id);
+  // The note as it stands, so saving an edit keeps it rather than clearing it
+  // by omission -- and so it can be rewritten alongside the legs it explains.
+  setTrayNote(m.note);
 
   selectedIncomingIds = [...m.incoming_ids];
   selectedOutgoingIds = [...m.outgoing_ids];
@@ -925,6 +947,7 @@ function cancelMatch() {
     editingMatchId = null;
     editingMatchOriginal = null;
   }
+  setTrayNote("");
   restoreStashedSelection();
   lastIncomingClickId = null;
   lastOutgoingClickId = null;
@@ -945,6 +968,25 @@ async function deleteMatch(id) {
   matches = matches.filter((m) => m.id !== id);
   render();
 }
+
+// The match popup (see match_detail.js) can change a match while it's open
+// over this page -- someone writes a note on it. It saves against the same API
+// this page does, so rather than re-fetching the list, take the match it
+// already saved and put it where this page keeps its copy.
+document.addEventListener("match:updated", (e) => {
+  const updated = e.detail;
+  // The match being edited isn't in `matches` at all; its legs are sitting in
+  // the tray, and its saved form is held aside for the cancel path.
+  if (editingMatchOriginal && editingMatchOriginal.id === updated.id) {
+    editingMatchOriginal = { ...editingMatchOriginal, ...updated };
+    return;
+  }
+  const i = matches.findIndex((m) => m.id === updated.id);
+  if (i === -1) return;
+
+  matches[i] = { ...matches[i], ...updated };
+  render();
+});
 
 // Who made the match and, when someone has since changed it, who that was.
 // Kept to one line: the row's job is the two sides and what they're off by,
@@ -1271,6 +1313,9 @@ document.getElementById("cutoff-modal-overlay").addEventListener("click", (e) =>
 });
 
 document.getElementById("btn-confirm").addEventListener("click", confirmMatch);
+// Typed text is part of the unsaved tray, so it goes to disk with the rest of
+// it rather than only when something else happens to re-render the page.
+document.getElementById("tray-note").addEventListener("input", saveTraySnapshot);
 document.getElementById("btn-cancel").addEventListener("click", cancelMatch);
 document.getElementById("btn-refresh-matches").addEventListener("click", refreshMatches);
 document.getElementById("btn-refresh-transactions").addEventListener("click", () => refreshTransactions({ announce: true }));

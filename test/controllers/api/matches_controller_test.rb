@@ -237,4 +237,63 @@ class Api::MatchesControllerTest < ActionController::TestCase
       end
     end
   end
+
+  # The match popup's note editor sends nothing but a note. The legs it doesn't
+  # mention are the whole match, so reading their absence as "no legs" would
+  # empty it -- and the stored discrepancy has to survive too, since the
+  # request carries no amounts to re-derive it from.
+  test "a note-only update leaves the legs and the discrepancy alone" do
+    Hcb::Client.stub :new, @fake_client do
+      stub_membership("member") do
+        post :create, params: { organization_id: "org_1", incoming_ids: [ "txn_in" ], outgoing_ids: [] }
+        assert_response :created
+        match_id = JSON.parse(response.body)["id"]
+
+        patch :update, params: { organization_id: "org_1", id: match_id, note: "Refunded in February" }
+        assert_response :success
+
+        body = JSON.parse(response.body)
+        assert_equal "Refunded in February", body["note"]
+        assert_equal [ "txn_in" ], body["incoming_ids"]
+        assert_equal 100.0, body["discrepancy"]
+        # The popup redraws its change log from this response.
+        assert body["history"].any? { |e| e["action"] == "edited" }
+
+        match = Match.find(match_id)
+        assert_equal [ "txn_in" ], match.incoming_transaction_ids
+        assert_equal 10_000, match.discrepancy_cents
+      end
+    end
+  end
+
+  test "an update that sends legs still rewrites them" do
+    Hcb::Client.stub :new, @fake_client do
+      stub_membership("member") do
+        post :create, params: { organization_id: "org_1", incoming_ids: [ "txn_in" ], outgoing_ids: [], note: "First" }
+        assert_response :created
+        match_id = JSON.parse(response.body)["id"]
+
+        patch :update, params: { organization_id: "org_1", id: match_id, incoming_ids: [ "txn_in" ], outgoing_ids: [ "txn_out" ] }
+        assert_response :success
+
+        body = JSON.parse(response.body)
+        assert_equal [ "txn_out" ], body["outgoing_ids"]
+        assert_equal 0, body["discrepancy"]
+        # Not sent, so not touched.
+        assert_equal "First", body["note"]
+      end
+    end
+  end
+
+  test "a reader cannot write a note" do
+    match = Match.create!(hcb_organization_id: "org_1", discrepancy_cents: 0, created_by: @user)
+
+    Hcb::Client.stub :new, @fake_client do
+      stub_membership("reader") do
+        patch :update, params: { organization_id: "org_1", id: match.id, note: "mine now" }
+      end
+    end
+    assert_response :forbidden
+    assert_nil match.reload.note
+  end
 end

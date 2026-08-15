@@ -429,6 +429,30 @@ header#stats {
 #tray-diff-row.balanced #tray-diff { color: var(--green); font-weight: 700; }
 #tray-diff-row.unbalanced #tray-diff { color: var(--red); font-weight: 700; }
 
+/* Between the totals and the buttons: the last thing to fill in before
+   confirming, and the field an edit prefills with the note already there. */
+.tray-note { margin: 10px 0; }
+
+.tray-note-label {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #656d76;
+  margin-bottom: 3px;
+}
+
+.tray-note-input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+  resize: vertical;
+}
+
 .tray-actions { display: flex; gap: 8px; }
 
 button {
@@ -702,6 +726,40 @@ button.danger {
   font-size: 12px;
   font-weight: 600;
 }
+
+/* The note, with its "add"/"edit" button on the label's line rather than under
+   the text -- the note itself is what should be read first, and a button below
+   a wrapped paragraph reads as belonging to whatever follows it. */
+.match-note-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.match-note-edit { font-size: 12px; padding: 2px 8px; }
+.match-note-empty { color: #656d76; font-style: italic; }
+
+.match-note-input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+  resize: vertical;
+}
+
+.match-note-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.match-note-hint { font-size: 11px; color: #656d76; }
+.match-note-error { margin-top: 6px; font-size: 12px; color: var(--red); }
 
 .match-detail-sides {
   display: grid;

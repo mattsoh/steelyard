@@ -80,25 +80,43 @@ class Api::MatchesController < ApplicationController
     end
   end
 
+  # Partial by design: a field that wasn't sent is left as it stands. The
+  # matcher's edit flow sends the legs and the note together; the match popup's
+  # note editor sends only a note, and must not disturb what the match pairs.
   def update
     match = Match.active.for_organization(organization_id).find_by(id: params[:id])
-    incoming_ids = Array(params[:incoming_ids]).map(&:to_s)
-    outgoing_ids = Array(params[:outgoing_ids]).map(&:to_s)
+    incoming_ids = params.key?(:incoming_ids) ? Array(params[:incoming_ids]).map(&:to_s) : nil
+    outgoing_ids = params.key?(:outgoing_ids) ? Array(params[:outgoing_ids]).map(&:to_s) : nil
+    note = params.key?(:note) ? params[:note].to_s : nil
 
     ledger = OrganizationLedger.new(hcb_client, organization_id)
-    by_id = (incoming_ids + outgoing_ids).uniq.index_with { |id| ledger.transaction_by_id(id) }
+    # Nothing to resolve for a note-only save. Otherwise it's every leg the
+    # match will have afterwards -- including the side that wasn't sent, whose
+    # amounts still count toward the discrepancy.
+    by_id = if match && (incoming_ids || outgoing_ids)
+      ids = (incoming_ids || match.incoming_transaction_ids) + (outgoing_ids || match.outgoing_transaction_ids)
+      ids.uniq.index_with { |id| ledger.transaction_by_id(id) }
+    else
+      {}
+    end
 
     result = Matches::Update.new(
       match: match,
       user: current_user,
       incoming_ids: incoming_ids,
       outgoing_ids: outgoing_ids,
-      note: params[:note].to_s,
+      note: note,
       transactions_by_id: by_id
     ).call
 
     if result.success?
-      render json: serialize(result.match, ledger)
+      # With the history, so the popup that just saved a note can redraw its
+      # "last edited by" line and its change log from this response rather than
+      # fetching the match again.
+      history = Matches::History.for_match(result.match)
+      render json: serialize(result.match, ledger, history: history).merge(
+        history: history.entries.map(&:as_json)
+      )
     else
       render json: { error: result.error }, status: result.status
     end
