@@ -29,6 +29,21 @@ class ApiV1Test < ActionDispatch::IntegrationTest
 
   def body = JSON.parse(response.body)
 
+  # An edit by somebody else, as the web app performs one. Wrapped in a
+  # request the way a real one would be, since that's what ties the versions
+  # it writes together into a single entry (see Matches::History).
+  def edit_match(id, editor:)
+    user = User.create!(hcb_user_id: "usr_#{editor}", name: editor, access_token: "a", refresh_token: "b", token_expires_at: 1.hour.from_now)
+    by_id = [ @incoming, @outgoing ].to_h { |raw| [ raw["id"], Hcb::TransactionPresenter.new(raw) ] }
+
+    PaperTrail.request(whodunnit: user.id.to_s, controller_info: { request_id: "req-edit-#{id}" }) do
+      Matches::Update.new(
+        match: Match.find(id), user: user,
+        incoming_ids: [ "txn_in" ], outgoing_ids: [ "txn_out" ], note: "", transactions_by_id: by_id
+      ).call
+    end
+  end
+
   test "a request without a usable token is refused and told how to authenticate" do
     get "/api/v1/organizations"
     assert_response :unauthorized
@@ -169,6 +184,84 @@ class ApiV1Test < ActionDispatch::IntegrationTest
       get "/api/v1/organizations/org_1/transactions", params: { status: "unmatched" }, headers: auth_headers
       assert_equal 2, body["total"]
     end
+  end
+
+  test "one match comes back with the history behind it" do
+    id = nil
+
+    with_hcb("member") do
+      post "/api/v1/organizations/org_1/matches",
+           params: { incoming_ids: [ "txn_in" ], outgoing_ids: [] }, headers: auth_headers, as: :json
+      assert_response :created
+      id = body["id"]
+      # A match nobody has touched since it was made says so outright, rather
+      # than leaving a caller to infer it by comparing timestamps.
+      assert_equal false, body["edited"]
+
+      get "/api/v1/organizations/org_1/matches", headers: auth_headers
+      assert_equal false, body["matches"].sole["edited"]
+    end
+
+    # Somebody else fills in the outgoing side this match was missing. There's
+    # no edit operation on the token surface, so this is the one the web app
+    # runs -- which is the point: the history reads the same either way.
+    edit_match(id, editor: "Grace")
+
+    with_hcb("member") do
+      get "/api/v1/organizations/org_1/matches/#{id}", headers: auth_headers
+      assert_response :success
+
+      assert_equal id, body["id"]
+      assert_equal "Matt", body["created_by"]
+      assert_equal true, body["edited"]
+      assert_equal "Grace", body["last_edited_by"]
+      assert_equal "edited", body["last_edited_action"]
+
+      assert_equal [ "created", "edited" ], body["history"].map { |e| e["action"] }
+      edit = body["history"].last
+      assert_equal "Grace", edit["actor_name"]
+      assert_includes edit["changes"], { "kind" => "leg", "action" => "added", "direction" => "outgoing", "transaction_id" => "txn_out" }
+
+      # The list carries the summary too, so a caller scanning for matches
+      # somebody has been arguing over doesn't have to fetch each one.
+      get "/api/v1/organizations/org_1/matches", headers: auth_headers
+      assert_equal "Grace", body["matches"].sole["last_edited_by"]
+    end
+  end
+
+  test "a match undone is still readable, and says what it used to pair" do
+    with_hcb("member") do
+      post "/api/v1/organizations/org_1/matches",
+           params: { incoming_ids: [ "txn_in" ], outgoing_ids: [ "txn_out" ] }, headers: auth_headers, as: :json
+      id = body["id"]
+      delete "/api/v1/organizations/org_1/matches/#{id}", headers: auth_headers
+      assert_response :success
+
+      # Gone from the list -- undoing frees its transactions -- but the one
+      # place that can explain what happened to it still answers.
+      get "/api/v1/organizations/org_1/matches", headers: auth_headers
+      assert_equal 0, body["total"]
+
+      get "/api/v1/organizations/org_1/matches/#{id}", headers: auth_headers
+      assert_response :success
+      assert_equal true, body["undone"]
+      assert_equal "Matt", body["undone_by"]
+      assert body["undone_at"].present?
+      # The legs are undone alongside the match, so reporting only live ones
+      # would answer "this match paired nothing".
+      assert_equal [ "txn_in" ], body["incoming_ids"]
+      assert_equal [ "Grant to Bar" ], body["outgoing"].map { |t| t["memo"] }
+      assert_equal [ "created", "undone" ], body["history"].map { |e| e["action"] }
+    end
+  end
+
+  test "a match belonging to another organization is not reachable" do
+    other = Match.create!(hcb_organization_id: "org_2", discrepancy_cents: 0, created_by: @user)
+
+    with_hcb("manager") do
+      get "/api/v1/organizations/org_1/matches/#{other.id}", headers: auth_headers
+    end
+    assert_response :not_found
   end
 
   test "an unbalanced match is saved as a discrepancy and reported as one" do

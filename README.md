@@ -90,8 +90,10 @@ tokens). Note claude.ai reaches the server from Anthropic's egress range, so a c
 publicly reachable HTTPS host — `localhost` works with Claude Code only.
 
 Tools: `list_organizations`, `get_reconciliation_summary`, `list_transactions`, `get_transaction`,
-`list_matches`, `create_match`, `undo_match`. The last two need the member or manager role, and
-`undo_match` reverses anything `create_match` did.
+`list_matches`, `get_match`, `create_match`, `undo_match`. The last two need the member or manager
+role, and `undo_match` reverses anything `create_match` did. `get_match` is the one to reach for
+before undoing somebody else's work: it carries the same change history the detail popup shows, so
+a match two people have already edited reads as a disagreement rather than a mistake.
 
 ### REST
 
@@ -103,6 +105,7 @@ Tools: `list_organizations`, `get_reconciliation_summary`, `list_transactions`, 
 | `GET`    | `/api/v1/organizations/:id/transactions`              | `status`, `direction`, `query`, `after`, `before`, `min_amount`, `max_amount`, `include_before_cutoff`, `limit`, `offset` |
 | `GET`    | `/api/v1/organizations/:id/transactions/:txn_id`      | One transaction, with the match it belongs to             |
 | `GET`    | `/api/v1/organizations/:id/matches`                   | `status=all\|balanced\|unbalanced`                        |
+| `GET`    | `/api/v1/organizations/:id/matches/:match_id`         | One match with its change history; answers for undone ones |
 | `POST`   | `/api/v1/organizations/:id/matches`                   | `incoming_ids`, `outgoing_ids`, `note`                    |
 | `DELETE` | `/api/v1/organizations/:id/matches/:match_id`         | Undo a match                                              |
 

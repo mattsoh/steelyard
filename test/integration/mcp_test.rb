@@ -120,6 +120,46 @@ class McpTest < ActionDispatch::IntegrationTest
     end
   end
 
+  # The question a model asks before touching somebody else's match: who made
+  # this, and has anyone argued with it since?
+  test "get_match answers with the change history behind one match" do
+    id = nil
+
+    with_hcb("member") do
+      id = tool_payload(call_tool("create_match", {
+        "organization_id" => "org_1", "incoming_ids" => [ "txn_in" ], "outgoing_ids" => []
+      }))["id"]
+    end
+
+    editor = User.create!(hcb_user_id: "usr_2", name: "Grace", access_token: "a", refresh_token: "b", token_expires_at: 1.hour.from_now)
+    by_id = [ @incoming, @outgoing ].to_h { |raw| [ raw["id"], Hcb::TransactionPresenter.new(raw) ] }
+    PaperTrail.request(whodunnit: editor.id.to_s, controller_info: { request_id: "req-edit" }) do
+      Matches::Update.new(match: Match.find(id), user: editor, incoming_ids: [ "txn_in" ],
+                          outgoing_ids: [ "txn_out" ], note: "paid out in full", transactions_by_id: by_id).call
+    end
+
+    with_hcb("reader") do
+      found = tool_payload(call_tool("get_match", { "organization_id" => "org_1", "match_id" => id }))
+
+      assert_equal id, found["id"]
+      assert_equal "Matt", found["created_by"]
+      assert_equal "Grace", found["last_edited_by"]
+      assert_equal [ "created", "edited" ], found["history"].map { |e| e["action"] }
+      # Named rather than left as ids, so a model can weigh the change without
+      # a lookup per leg.
+      assert_equal [ "Grant to Bar" ], found["outgoing"].map { |t| t["memo"] }
+    end
+  end
+
+  test "get_match reports a match this organization doesn't have" do
+    with_hcb("reader") do
+      reply = call_tool("get_match", { "organization_id" => "org_1", "match_id" => 999_999 })
+
+      assert_equal true, reply["result"]["isError"]
+      assert_match(/No match/, tool_payload(reply)["error"])
+    end
+  end
+
   # A refusal the model is meant to read and act on comes back as a tool result
   # flagged isError, not as a JSON-RPC error the client would swallow.
   test "a role that cannot match is reported to the model, not to the transport" do

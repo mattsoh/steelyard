@@ -127,6 +127,27 @@ module Mcp
       ),
 
       Tool.new(
+        name: "get_match",
+        title: "Get match",
+        description: "One match in full, with its change history: who made it, who has edited it since, what each " \
+                     "of those edits did to the legs and the discrepancy, and which changes the app made on its own " \
+                     "because HCB restated a transaction. Call this before undoing or re-doing somebody else's " \
+                     "match — an unbalanced match that someone has already edited twice is usually a disagreement " \
+                     "to read, not a mistake to correct. Works on undone matches too, which is how you find out what " \
+                     "one used to pair.",
+        input_schema: {
+          type: "object",
+          properties: {
+            organization_id: ORGANIZATION_ID,
+            match_id: { type: "integer", description: "Steelyard match id, from list_matches, create_match, or a transaction's match_id." }
+          },
+          required: [ "organization_id", "match_id" ],
+          additionalProperties: false
+        },
+        handler: ->(ops, args) { ops.match(args["organization_id"], args["match_id"]) }
+      ),
+
+      Tool.new(
         name: "create_match",
         title: "Create match",
         description: "Record that these incoming transactions account for these outgoing ones — the same action " \

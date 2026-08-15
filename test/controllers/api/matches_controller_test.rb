@@ -146,6 +146,11 @@ class Api::MatchesControllerTest < ActionController::TestCase
         assert_equal true, body["undone"]
         assert body["undone_at"].present?
         assert_includes body["history"].map { |e| e["action"] }, "undone"
+        # Undoing marks the legs undone too, so reporting only live ones would
+        # leave the popup saying this match paired nothing at all.
+        assert_equal [ "txn_in" ], body["incoming_ids"]
+        assert_equal [ "txn_out" ], body["outgoing_ids"]
+        assert_equal "Grant", body.dig("transactions", "txn_out", "memo")
       end
     end
   end

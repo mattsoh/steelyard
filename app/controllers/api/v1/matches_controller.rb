@@ -10,6 +10,12 @@ module Api
         )
       end
 
+      # One match with its change history. Answers for undone matches too --
+      # see PublicApi::Operations#match.
+      def show
+        render json: operations.match(params[:organization_id], params[:id])
+      end
+
       def create
         render json: operations.create_match(
           params[:organization_id],

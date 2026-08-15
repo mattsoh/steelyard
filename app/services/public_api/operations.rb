@@ -109,13 +109,44 @@ module PublicApi
 
       # Newest first, matching the order the matcher lists them in.
       page, total = paginate(records.reverse, limit, offset)
+      # Only the page that's actually being serialized: one query either way,
+      # but no reason to read the history of matches nobody asked for.
+      histories = Matches::History.for_matches(page)
       {
         organization: organization_json(org),
         total: total,
         limit: page_size(limit),
         offset: offset.to_i,
-        matches: page.map { |m| match_json(org, m) }
+        matches: page.map { |m| match_json(org, m, history: histories[m.id]) }
       }
+    end
+
+    # One match in full, including its change history: who made it, who has
+    # touched it since, and what each of those changes actually did. The list
+    # above says a match was edited; this says by whom and to what.
+    #
+    # Unlike every other read here, this can answer for an undone match --
+    # "what happened to this one?" is exactly the question the history exists
+    # for, and a match disappearing from the list is when people start asking.
+    def match(organization_id, match_id)
+      org = scope_for(organization_id)
+      record = Match.for_organization(org.organization_id)
+        .includes(:created_by, :undone_by, :match_transactions, :adjustments)
+        .find_by(id: match_id)
+      raise Error.new("No match #{match_id} in this organization.", status: :not_found) unless record
+
+      # Same reasoning as resynced_matches, for the one record: report what the
+      # match is off by now, not what it was off by when it was confirmed. An
+      # undone match is left alone -- it isn't pairing anything any more.
+      Matches::Resync.new(ledger: org.ledger, matches: [ record ]).call unless record.undone?
+      history = Matches::History.for_match(record)
+
+      match_json(org, record, history: history).merge(
+        undone_at: record.undone_at&.iso8601,
+        undone_by: record.undone_by && display_name(record.undone_by),
+        adjustments: record.adjustments.map { |a| { memo: a.memo, amount: money(a.amount_cents) } },
+        history: history.entries.map(&:as_json)
+      )
     end
 
     def create_match(organization_id, incoming_ids:, outgoing_ids:, note: nil)
@@ -193,7 +224,7 @@ module PublicApi
       presenter.as_json.merge(matched: !match_id.nil?, match_id: match_id)
     end
 
-    def match_json(org, match)
+    def match_json(org, match, history: nil)
       incoming_ids = match.incoming_transaction_ids
       outgoing_ids = match.outgoing_transaction_ids
       {
@@ -201,9 +232,11 @@ module PublicApi
         organization_id: org.organization_id,
         discrepancy: money(match.discrepancy_cents),
         balanced: match.discrepancy_cents.zero?,
+        undone: match.undone?,
         note: match.note,
-        created_by: match.created_by.name.presence || match.created_by.email,
+        created_by: display_name(match.created_by),
         created_at: match.created_at.iso8601,
+        **last_edit_json(history),
         # A match with legs on both sides of the cutoff: half of it is in the
         # working set and half is settled history.
         spans_cutoff: org.ledger.classify(incoming_ids + outgoing_ids) == :overlapping,
@@ -215,6 +248,20 @@ module PublicApi
         outgoing: legs_json(org, outgoing_ids)
       }
     end
+
+    # Who last touched the match and when -- `edited: false` on its own for one
+    # nobody has touched since it was made, which is most of them, so a caller
+    # can tell "unchanged" from "changed" without comparing timestamps. Also
+    # the answer for a match create_match has just returned, which passes no
+    # history because it cannot have one yet.
+    def last_edit_json(history)
+      edit = history&.last_edit
+      return { edited: false } unless edit
+
+      { edited: true, last_edited_at: edit.at.iso8601, last_edited_by: edit.actor_name, last_edited_action: edit.action.to_s }
+    end
+
+    def display_name(user) = user.name.presence || user.email
 
     # `remote: false`: a leg the drain doesn't know about is reported as such
     # rather than paid for with a live HCB request per unresolvable id.
