@@ -39,6 +39,9 @@ Rails.application.routes.draw do
   post "oauth/authorize", to: "oauth/authorizations#create"
   post "oauth/token",     to: "oauth/tokens#create"
 
+  get "/api", to: redirect("/api/v1")
+  get "/api/v1", to: redirect("/api/v1/me")
+
   namespace :api do
     namespace :v1 do
       get "me", to: "me#show"
@@ -57,6 +60,8 @@ Rails.application.routes.draw do
       end
     end
   end
+
+  match "/api/*path", to: "errors#not_found", via: :all
 
   scope "/organizations/:organization_id", as: :organization do
     get "matcher", to: "matcher#show", as: :matcher

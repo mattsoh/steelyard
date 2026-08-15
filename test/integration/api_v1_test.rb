@@ -64,6 +64,17 @@ class ApiV1Test < ActionDispatch::IntegrationTest
     assert_equal [ "org_1" ], body["organizations"].map { |o| o["id"] }
   end
 
+  test "the api root redirects to the v1 surface" do
+    get "/api"
+    assert_redirected_to "/api/v1"
+  end
+
+  test "unknown api routes return a json not-found error" do
+    get "/api/v1/does-not-exist"
+    assert_response :not_found
+    assert_equal "Not found.", body["error"]
+  end
+
   test "a non-member gets the same not-found answer as a nonexistent organization" do
     with_hcb(nil) do
       get "/api/v1/organizations/org_1", headers: auth_headers

@@ -8,7 +8,11 @@ class ErrorsController < ActionController::Base
   end
 
   def not_found
-    render status: :not_found
+    if request.path.start_with?("/api")
+      render json: { error: "Not found." }, status: :not_found
+    else
+      render status: :not_found
+    end
   end
 
   def unprocessable_entity
