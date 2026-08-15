@@ -155,6 +155,65 @@ class Api::MatchesControllerTest < ActionController::TestCase
     end
   end
 
+  # The ledger will fetch an id it doesn't recognize straight from HCB and
+  # cache it under a key carrying neither an organization nor a user, so
+  # resolving legs that way would let a transaction from outside this
+  # organization's history be described here off the back of someone else's
+  # request. A leg the drain doesn't know is left unresolved instead.
+  test "a leg outside this organization's history is not fetched to describe it" do
+    match = Match.create!(hcb_organization_id: "org_1", discrepancy_cents: 0, created_by: @user)
+    match.match_transactions.create!(hcb_organization_id: "org_1", hcb_transaction_id: "txn_in", direction: :incoming)
+    match.match_transactions.create!(hcb_organization_id: "org_1", hcb_transaction_id: "txn_elsewhere", direction: :outgoing)
+
+    # A real store for the duration: the test environment's null_store would
+    # drop the write below and let this pass without proving anything.
+    with_memory_cache do
+      # Warm exactly the key the fallback reads, as another organization's
+      # request would have left it -- it carries no organization and no user.
+      Rails.cache.write(
+        OrganizationLedger.single_transaction_cache_key("txn_elsewhere"),
+        { "id" => "txn_elsewhere", "date" => "2026-01-01", "memo" => "Another org's grant", "amount_cents" => -500 }
+      )
+
+      Hcb::Client.stub :new, @fake_client do
+        stub_membership("manager") do
+          get :show, params: { organization_id: "org_1", id: match.id }
+        end
+      end
+    end
+
+    assert_response :success
+    body = JSON.parse(response.body)
+    # Still listed as a leg -- the match really does reference it, and hiding
+    # that would leave the sides not adding up to the discrepancy beside them.
+    assert_equal [ "txn_elsewhere" ], body["outgoing_ids"]
+    assert_not body["transactions"].key?("txn_elsewhere")
+    assert_no_match(/Another org/, response.body)
+  end
+
+  def with_memory_cache
+    original = Rails.cache
+    Rails.cache = ActiveSupport::Cache::MemoryStore.new
+    yield
+  ensure
+    Rails.cache = original
+  end
+
+  # A match link is shareable, so it will end up in front of people who aren't
+  # in the organization. The id in it is not a capability: access is decided
+  # here, by the same membership check as everything else.
+  test "a non-member cannot read a match through its link" do
+    match = Match.create!(hcb_organization_id: "org_1", discrepancy_cents: 0, created_by: @user)
+
+    Hcb::Client.stub :new, @fake_client do
+      stub_membership(nil) do
+        get :show, params: { organization_id: "org_1", id: match.id }
+      end
+    end
+    assert_response :not_found
+    assert_no_match(/discrepancy|history/, response.body)
+  end
+
   test "show does not reach a match belonging to another organization" do
     other = Match.create!(hcb_organization_id: "org_2", discrepancy_cents: 0, created_by: @user)
 

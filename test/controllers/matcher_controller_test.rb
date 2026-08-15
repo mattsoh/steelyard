@@ -64,6 +64,13 @@ class MatcherControllerTest < ActionController::TestCase
       get :show, params: { organization_id: "org_1" }
     end
     assert_response :not_found
+
+    # Including through a match link, which is the form of this URL most likely
+    # to be forwarded to someone outside the organization.
+    stub_membership(nil) do
+      get :show, params: { organization_id: "org_1", id: "42" }
+    end
+    assert_response :not_found
   end
 
   test "unauthenticated visitors are redirected to login" do

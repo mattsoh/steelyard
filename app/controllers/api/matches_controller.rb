@@ -151,17 +151,21 @@ class Api::MatchesController < ApplicationController
 
   # Every transaction the popup has to name: the match's own legs, plus the
   # ones its history mentions adding or removing, which by definition are no
-  # longer legs and so wouldn't be resolved by anything else. Historical ones
-  # are looked up in the cached drain only -- a leg someone removed months ago
-  # isn't worth a live HCB round trip to put a memo on.
+  # longer legs and so wouldn't be resolved by anything else.
+  #
+  # `remote: false` throughout -- the same restriction PublicApi's legs_json
+  # makes, for the same reason. The ledger's fallback fetches an id it doesn't
+  # recognize straight from HCB and caches it under a key with no organization
+  # or user in it, so an id that isn't part of *this* organization's history
+  # could come back resolved off the back of somebody else's request. A leg
+  # this organization's drain doesn't know about is reported as unresolved
+  # instead; the popup already says so in place of the memo.
   def referenced_transactions(match, history, ledger)
-    current = (match.incoming_transaction_ids + match.outgoing_transaction_ids).uniq
-    historical = history.entries.flat_map { |e| e.changes.filter_map { |c| c[:transaction_id] } }.uniq - current
+    ids = (match.incoming_transaction_ids + match.outgoing_transaction_ids).uniq +
+      history.entries.flat_map { |e| e.changes.filter_map { |c| c[:transaction_id] } }
 
-    resolved = current.index_with { |id| ledger.transaction_by_id(id) }
-      .merge(historical.index_with { |id| ledger.transaction_by_id(id, remote: false) })
-
-    resolved.compact.transform_values(&:as_json)
+    ids.uniq.index_with { |id| ledger.transaction_by_id(id, remote: false) }
+      .compact.transform_values(&:as_json)
   end
 
   def display_name(user) = user.name.presence || user.email
