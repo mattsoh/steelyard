@@ -105,6 +105,62 @@ class Api::MatchesControllerTest < ActionController::TestCase
     assert_equal true, found["conflict"]
   end
 
+  test "show returns the match with its legs resolved and its history" do
+    Hcb::Client.stub :new, @fake_client do
+      stub_membership("reader") do
+        match = Match.create!(hcb_organization_id: "org_1", note: "for the workshop", discrepancy_cents: 0, created_by: @user)
+        match.match_transactions.create!(hcb_organization_id: "org_1", hcb_transaction_id: "txn_in", direction: :incoming)
+        match.match_transactions.create!(hcb_organization_id: "org_1", hcb_transaction_id: "txn_out", direction: :outgoing)
+
+        get :show, params: { organization_id: "org_1", id: match.id }
+        assert_response :success
+
+        body = JSON.parse(response.body)
+        assert_equal [ "txn_in" ], body["incoming_ids"]
+        assert_equal "for the workshop", body["note"]
+        assert_equal false, body["edited"]
+        # The legs come back as whole transactions, so the popup can name them
+        # without the page it opened over having loaded them.
+        assert_equal "Donation", body.dig("transactions", "txn_in", "memo")
+        assert_equal(-100.0, body.dig("transactions", "txn_out", "amount"))
+        assert_equal [ "created" ], body["history"].map { |e| e["action"] }
+        assert body.key?("created_by_name")
+        assert body["created_at"].present?
+      end
+    end
+  end
+
+  # The one view where an undone match is still worth reading: a link to one
+  # should explain what happened to it rather than 404.
+  test "show still answers for a match that has been undone" do
+    Hcb::Client.stub :new, @fake_client do
+      stub_membership("member") do
+        post :create, params: { organization_id: "org_1", incoming_ids: [ "txn_in" ], outgoing_ids: [ "txn_out" ] }
+        match_id = JSON.parse(response.body)["id"]
+        delete :destroy, params: { organization_id: "org_1", id: match_id }
+
+        get :show, params: { organization_id: "org_1", id: match_id }
+        assert_response :success
+
+        body = JSON.parse(response.body)
+        assert_equal true, body["undone"]
+        assert body["undone_at"].present?
+        assert_includes body["history"].map { |e| e["action"] }, "undone"
+      end
+    end
+  end
+
+  test "show does not reach a match belonging to another organization" do
+    other = Match.create!(hcb_organization_id: "org_2", discrepancy_cents: 0, created_by: @user)
+
+    Hcb::Client.stub :new, @fake_client do
+      stub_membership("manager") do
+        get :show, params: { organization_id: "org_1", id: other.id }
+      end
+    end
+    assert_response :not_found
+  end
+
   test "matching the same transaction twice returns a conflict" do
     Hcb::Client.stub :new, @fake_client do
       stub_membership("manager") do

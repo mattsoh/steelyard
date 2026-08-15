@@ -15,7 +15,38 @@ class Api::MatchesController < ApplicationController
     # reload that follows a sync; the single-transaction refresh runs its own.
     Matches::Resync.new(ledger: ledger, matches: matches).call
 
-    render json: { matches: matches.map { |m| serialize(m, ledger) } }
+    # One query for the whole page (see Matches::History.for_matches), which is
+    # what lets every row say who last touched it without a query per row.
+    histories = Matches::History.for_matches(matches)
+
+    render json: { matches: matches.map { |m| serialize(m, ledger, history: histories[m.id]) } }
+  end
+
+  # Everything about one match, for the detail popup: its legs as full
+  # transactions (rather than bare ids the caller has to already hold), who
+  # made it, who last changed it, and the whole change history behind it.
+  #
+  # Undone matches are readable here, unlike everywhere else, because this is
+  # the one view where "what happened to it" is the question -- a link to a
+  # match someone undid should explain that rather than 404.
+  def show
+    match = Match.for_organization(organization_id)
+      .includes(:created_by, :undone_by, :match_transactions, :adjustments)
+      .find_by(id: params[:id])
+    return render json: { error: "Match not found." }, status: :not_found unless match
+
+    ledger = OrganizationLedger.new(hcb_client, organization_id)
+    Matches::Resync.new(ledger: ledger, matches: [ match ]).call unless match.undone?
+
+    history = Matches::History.for_match(match)
+
+    render json: serialize(match, ledger, history: history).merge(
+      undone_at: match.undone_at&.iso8601,
+      undone_by_name: match.undone_by && display_name(match.undone_by),
+      adjustments: match.adjustments.map { |a| { memo: a.memo, amount: a.amount_cents / 100.0 } },
+      transactions: referenced_transactions(match, history, ledger),
+      history: history.entries.map(&:as_json)
+    )
   end
 
   def create
@@ -86,7 +117,7 @@ class Api::MatchesController < ApplicationController
 
   private
 
-  def serialize(m, ledger)
+  def serialize(m, ledger, history: nil)
     incoming_ids = m.incoming_transaction_ids
     outgoing_ids = m.outgoing_transaction_ids
     {
@@ -95,9 +126,43 @@ class Api::MatchesController < ApplicationController
       outgoing_ids: outgoing_ids,
       note: m.note,
       discrepancy: m.discrepancy_cents / 100.0,
-      created_by_name: m.created_by.name.presence || m.created_by.email,
+      created_by_name: display_name(m.created_by),
       created_at: m.created_at.iso8601,
-      conflict: ledger.classify(incoming_ids + outgoing_ids) == :overlapping
+      conflict: ledger.classify(incoming_ids + outgoing_ids) == :overlapping,
+      undone: m.undone?,
+      **last_edit_fields(history)
     }
   end
+
+  # Who last touched the match and when, or nothing at all for one nobody has
+  # touched since it was made -- which is most of them, and why the frontend
+  # gets an explicit `edited` rather than having to infer it from timestamps.
+  def last_edit_fields(history)
+    edit = history&.last_edit
+    return { edited: false } unless edit
+
+    {
+      edited: true,
+      last_edited_at: edit.at.iso8601,
+      last_edited_by_name: edit.actor_name,
+      last_edited_action: edit.action.to_s
+    }
+  end
+
+  # Every transaction the popup has to name: the match's own legs, plus the
+  # ones its history mentions adding or removing, which by definition are no
+  # longer legs and so wouldn't be resolved by anything else. Historical ones
+  # are looked up in the cached drain only -- a leg someone removed months ago
+  # isn't worth a live HCB round trip to put a memo on.
+  def referenced_transactions(match, history, ledger)
+    current = (match.incoming_transaction_ids + match.outgoing_transaction_ids).uniq
+    historical = history.entries.flat_map { |e| e.changes.filter_map { |c| c[:transaction_id] } }.uniq - current
+
+    resolved = current.index_with { |id| ledger.transaction_by_id(id) }
+      .merge(historical.index_with { |id| ledger.transaction_by_id(id, remote: false) })
+
+    resolved.compact.transform_values(&:as_json)
+  end
+
+  def display_name(user) = user.name.presence || user.email
 end

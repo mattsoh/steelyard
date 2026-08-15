@@ -67,6 +67,13 @@ Rails.application.routes.draw do
     get "matcher", to: "matcher#show", as: :matcher
     get "ledger",  to: "ledger#show",  as: :ledger
 
+    # The shareable link to one match. It's the matcher page with that match's
+    # detail popup already open over it -- a match is a relationship between
+    # transactions, so landing on it with the rest of the organization behind
+    # it is the useful thing, and closing the popup leaves you somewhere you
+    # can carry on working.
+    get "matches/:id", to: "matcher#show", as: :match, constraints: { id: /\d+/ }
+
     namespace :api do
       get    "transactions",      to: "transactions#index"
       get    "transactions/page", to: "transactions#page"
@@ -76,6 +83,7 @@ Rails.application.routes.draw do
       get    "transactions/:id/comments", to: "comments#index"
       post   "transactions/:id/refresh", to: "transactions#refresh_one"
       get    "matches",           to: "matches#index"
+      get    "matches/:id",       to: "matches#show"
       post   "matches",           to: "matches#create"
       patch  "matches/:id",       to: "matches#update"
       delete "matches/:id",       to: "matches#destroy"

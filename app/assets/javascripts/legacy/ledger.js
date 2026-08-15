@@ -4,6 +4,7 @@ let ledger = [];
 let provisional = [];
 let matchedIds = new Set();
 let discrepancyIds = new Set();
+let matchIdByTransaction = new Map();
 
 let zeroBalanceOptions = [];
 let zeroBalanceSelectedId = null;
@@ -311,6 +312,7 @@ function clearForFullReload() {
   provisional = [];
   matchedIds = new Set();
   discrepancyIds = new Set();
+  matchIdByTransaction = new Map();
 
   document.getElementById("stat-final-balance").textContent = "—";
   document.getElementById("stat-count").textContent = "—";
@@ -392,11 +394,26 @@ function renderProvisional(totalCount) {
 function applyMatches(matches) {
   matchedIds = new Set();
   discrepancyIds = new Set();
+  matchIdByTransaction = new Map();
   for (const m of matches) {
     const target = m.discrepancy === 0 ? matchedIds : discrepancyIds;
-    for (const iid of m.incoming_ids) target.add(iid);
-    for (const oid of m.outgoing_ids) target.add(oid);
+    for (const iid of m.incoming_ids) {
+      target.add(iid);
+      matchIdByTransaction.set(iid, m.id);
+    }
+    for (const oid of m.outgoing_ids) {
+      target.add(oid);
+      matchIdByTransaction.set(oid, m.id);
+    }
   }
+}
+
+// The match a row belongs to, for the transaction modal's "View match" button
+// (see details.js). This page shows matched/discrepancy status but never the
+// matches themselves, so the popup is the only way to see what a row was
+// matched against without going back to the matcher.
+function matchIdForTransaction(transactionId) {
+  return matchIdByTransaction.get(transactionId) || null;
 }
 
 function rowStatus(r) {

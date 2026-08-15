@@ -30,7 +30,17 @@ bin/rails test
 ## Change history
 
 Every change to a match, its legs, its adjustments, and an organization's cutoff is written to the
-`versions` table by PaperTrail. There's no UI for it yet; read it from the console:
+`versions` table by PaperTrail.
+
+Open a match ("View" on any match row, or the ⓘ on a matched transaction in the ledger) and you get
+it back as a popup: both sides as full transactions, who matched them and when, who last touched it
+since, and a **Change history** dropdown listing every action behind it. One action reads as one
+entry — `Matches::Update` replaces every leg, so a single edit writes half a dozen versions, and
+`Matches::History` regroups them by the request that wrote them. That popup has its own link
+(`/organizations/<org>/matches/<id>`, the "Copy link" button), which opens the matcher with the
+match already open over it.
+
+For anything the popup doesn't answer, read the table from the console:
 
 ```ruby
 match.versions.map { |v| [ v.created_at, v.event, v.actor_name, v.object_changes ] }
@@ -47,8 +57,8 @@ AuditVersion.for_organization("org_...").order(created_at: :desc)
 discrepancy re-derived after HCB restated a transaction (see `Matches::Resync`), `legacy_import`
 for records brought over from the pre-Rails app.
 
-This is a record, not a mechanism — nothing reads it to decide behaviour, and undoing a match is
-still `undone_at`/`undone_by_user_id` on the match itself.
+This is a record, not a mechanism — nothing reads it to decide behaviour (the popup above only
+displays it), and undoing a match is still `undone_at`/`undone_by_user_id` on the match itself.
 
 ## API and MCP
 

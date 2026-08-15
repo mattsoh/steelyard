@@ -471,7 +471,7 @@ button.danger {
 
 .match-row {
   display: grid;
-  grid-template-columns: 1fr 1fr 90px 140px;
+  grid-template-columns: 1fr 1fr 90px 195px;
   gap: 10px;
   padding: 10px 14px;
   border-bottom: 1px solid #eef0f2;
@@ -492,6 +492,11 @@ button.danger {
 .discrepancy-bad { color: var(--red); font-weight: 700; }
 
 .match-meta { font-size: 10px; color: #656d76; font-weight: 400; margin-top: 3px; }
+
+/* The one thing a row says about a match having changed since it was made.
+   Everything else about that change -- when, and what it did -- is in the
+   detail popup, which is where there's room for it. */
+.match-meta-edited { color: var(--amber); }
 
 .empty-msg { padding: 16px; color: #656d76; text-align: center; }
 
@@ -629,6 +634,187 @@ button.danger {
 .detail-comment + .detail-comment { margin-top: 8px; }
 .detail-comment-date { font-size: 11px; color: #656d76; }
 .detail-comment-admin-only { font-size: 11px; color: #656d76; font-style: italic; }
+
+/* ---- Match detail popup (see match_detail.js) -------------------------- */
+
+/* Most of the screen, not a column: a match is two sides plus a history, and
+   the transaction modal's 560px would have every leg wrapping. Held at a
+   consistent size rather than shrink-wrapped to its contents, so opening one
+   match after another doesn't have the panel jumping about -- the header stays
+   put and the body scrolls inside it. */
+.modal-box-wide {
+  max-width: 1040px;
+  width: 92%;
+  height: min(86vh, 820px);
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.modal-box-wide .modal-body {
+  flex: 1;
+  overflow-y: auto;
+}
+
+/* A leg's own transaction modal opens over the match popup, so it has to sit
+   above it -- and above the overlay dimming the page behind both. */
+#detail-modal-overlay { z-index: 110; }
+
+.modal-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.match-link-note { font-size: 11px; color: #656d76; }
+.match-link-note.warning { color: var(--amber); }
+
+.match-detail-top {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-bottom: 12px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.match-status { font-size: 14px; }
+
+/* Who made it and who last changed it, on one line beside the status -- the
+   two questions the popup exists to answer, before the legs. */
+.match-provenance {
+  font-size: 12px;
+  color: #656d76;
+  flex: 1 1 260px;
+}
+.match-provenance strong { color: #1f2328; font-weight: 600; }
+.match-sep { color: var(--border); }
+
+.match-undone-banner {
+  flex: 1 1 100%;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: #fff8ed;
+  border: 1px solid var(--amber);
+  color: var(--amber);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.match-detail-sides {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.match-detail-side {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.match-detail-side-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 10px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #656d76;
+}
+.match-detail-side-head strong { font-size: 13px; color: #1f2328; }
+
+.match-detail-side:first-child .match-leg-amount { color: var(--in-color); }
+.match-detail-side:last-child .match-leg-amount { color: var(--out-color); }
+
+.match-leg {
+  display: grid;
+  grid-template-columns: 78px 1fr 90px 44px;
+  gap: 8px;
+  align-items: center;
+  padding: 7px 10px;
+  font-size: 12px;
+}
+.match-leg + .match-leg { border-top: 1px solid #eef0f2; }
+.match-leg-date { color: #656d76; }
+.match-leg-memo { overflow-wrap: anywhere; }
+.match-leg-amount { text-align: right; font-weight: 600; }
+.match-leg-icons { text-align: right; white-space: nowrap; }
+
+/* A leg the loaded history can't resolve. Said out loud rather than dropped:
+   without it the sides wouldn't add up to the discrepancy above them. */
+.match-leg-missing { grid-template-columns: 1fr; color: #656d76; }
+.match-leg-note { font-style: italic; }
+
+.match-info-icon {
+  background: none;
+  border: none;
+  color: #656d76;
+  cursor: pointer;
+  font-size: 15px;
+  padding: 0 1px;
+  line-height: 1;
+  vertical-align: middle;
+}
+.match-info-icon:hover { color: var(--in-color); }
+
+/* Collapsed by default on a match nobody has touched since creating it (where
+   the history is one line saying so), open when there's more to it. */
+.match-history {
+  margin-top: 16px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+.match-history > summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  color: #656d76;
+}
+.match-history > summary:hover { color: var(--in-color); }
+
+.match-events {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+}
+
+.match-event {
+  padding: 8px 0 8px 12px;
+  border-left: 2px solid var(--border);
+  font-size: 12px;
+}
+.match-event + .match-event { border-top: 1px solid #eef0f2; }
+.match-event-created { border-left-color: var(--in-color); }
+.match-event-edited { border-left-color: var(--amber); }
+.match-event-undone { border-left-color: var(--red); }
+
+.match-event-head { color: #656d76; }
+.match-event-label { font-weight: 700; color: #1f2328; }
+.match-event-time { float: right; font-size: 11px; }
+/* Named the process that acted, not a person -- see AuditVersion#system?. */
+.match-event-system { font-style: italic; }
+
+.match-event-changes {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+}
+
+.match-change {
+  padding: 2px 0;
+  color: #1f2328;
+  overflow-wrap: anywhere;
+}
+.match-change-sign { display: inline-block; width: 12px; font-weight: 700; }
+.match-change-added > .match-change-sign { color: var(--green); }
+.match-change-removed > .match-change-sign { color: var(--red); }
 
 /* The base `main` rule sets up a 5-column grid sized for the matcher page's
    panels + resize handles. The ledger page only has one child (#panel-ledger),
@@ -961,6 +1147,26 @@ tr.zero-point { background: #fff8c5; }
     width: 94%;
     max-height: 90vh;
   }
+
+  /* Side by side needs width the phone doesn't have; stacked, incoming then
+     outgoing still reads in the order the money moved. */
+  .match-detail-sides {
+    grid-template-columns: 1fr;
+  }
+
+  .match-leg {
+    grid-template-columns: 70px 1fr auto;
+    grid-template-areas:
+      "date memo memo"
+      ".    amt  icons";
+    row-gap: 2px;
+  }
+  .match-leg-date { grid-area: date; }
+  .match-leg-memo { grid-area: memo; }
+  .match-leg-amount { grid-area: amt; text-align: left; }
+  .match-leg-icons { grid-area: icons; }
+
+  .match-event-time { float: none; display: block; }
 }
 
 /* Touch targets: comfortable tap areas regardless of pointer-precision heuristics */

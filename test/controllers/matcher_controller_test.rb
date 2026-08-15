@@ -37,6 +37,28 @@ class MatcherControllerTest < ActionController::TestCase
     end
   end
 
+  test "the match modal is on the page, closed" do
+    stub_membership("member") do
+      get :show, params: { organization_id: "org_1" }
+    end
+
+    assert_match(/id="match-modal-overlay"[^>]*class="modal-overlay hidden"/, response.body)
+    assert_includes response.body, "window.FOCUS_MATCH_ID = null"
+  end
+
+  # A link to one match: the same page, with that match's popup opened over it
+  # on load. The match itself isn't rendered here -- match_detail.js fetches it,
+  # so the popup doesn't wait on the page's transaction drain behind it.
+  test "a match link renders the matcher with that match in focus" do
+    stub_membership("member") do
+      get :show, params: { organization_id: "org_1", id: "42" }
+    end
+
+    assert_response :success
+    assert_includes response.body, 'window.FOCUS_MATCH_ID = "42"'
+    assert_includes response.body, 'id="list-incoming"'
+  end
+
   test "a non-member gets the same not-found response as a nonexistent org" do
     stub_membership(nil) do
       get :show, params: { organization_id: "org_1" }

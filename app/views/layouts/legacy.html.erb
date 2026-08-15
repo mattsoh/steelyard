@@ -6,7 +6,16 @@
 <title><%= content_for(:title) || "Steelyard" %></title>
 <%= csrf_meta_tags %>
 <%= render "shared/favicons" %>
-<script>window.HCB_ORGANIZATION_ID = <%= raw organization_id.to_json %>;</script>
+<script>
+  window.HCB_ORGANIZATION_ID = <%= raw organization_id.to_json %>;
+  <%# The slug (falling back to the id) is what the shareable match links are
+      built from, so a link copied out of the popup reads the same as the URL
+      the person copying it is looking at. %>
+  window.HCB_ORGANIZATION_SLUG = <%= raw organization_slug.to_json %>;
+  <%# Set only when the page was reached through a match link, in which case
+      that match's popup opens on load. %>
+  window.FOCUS_MATCH_ID = <%= raw((@focus_match_id.presence || nil).to_json) %>;
+</script>
 <%= stylesheet_link_tag "site", "legacy", "data-turbo-track": "reload" %>
 </head>
 <body>
@@ -15,7 +24,7 @@
 
 <%= yield %>
 
-<%= javascript_include_tag "legacy/hcb_csrf_shim", "legacy/details", "legacy/streaming", "legacy/csv" %>
+<%= javascript_include_tag "legacy/hcb_csrf_shim", "legacy/details", "legacy/match_detail", "legacy/streaming", "legacy/csv" %>
 <%= yield :page_scripts %>
 </body>
 </html>
