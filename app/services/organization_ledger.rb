@@ -20,7 +20,15 @@ class OrganizationLedger
   # *invalidated* elsewhere: Hcb::OrganizationTransactions#refresh_one! drops
   # this key so a day-old copy can't shadow a transaction the user just asked
   # to re-check.
-  def self.single_transaction_cache_key(id) = "hcb:transaction:#{id}:v1"
+  #
+  # Keyed by organization as well as id, and both are required, so no caller
+  # can leave one out. Without the organization, one entry was shared by every
+  # request in the app that asked for that id -- and since the fetch behind it
+  # is only ever reached for an id an organization's own history *doesn't*
+  # contain, that shared entry was a way for one organization's request to be
+  # answered with something fetched for another. Version bumped along with the
+  # shape so the entries written under the old, unscoped key are never read.
+  def self.single_transaction_cache_key(organization_id, id) = "hcb:transaction:#{organization_id}:#{id}:v2"
 
   def initialize(client, organization_id)
     @client = client
@@ -88,7 +96,7 @@ class OrganizationLedger
     return transactions[index] if index
     return nil unless remote
 
-    raw = Rails.cache.fetch(self.class.single_transaction_cache_key(id), expires_in: SINGLE_TRANSACTION_TTL) { @client.transaction(id) }
+    raw = Rails.cache.fetch(self.class.single_transaction_cache_key(@organization_id, id), expires_in: SINGLE_TRANSACTION_TTL) { @client.transaction(id) }
     raw && Hcb::TransactionPresenter.new(raw)
   rescue OAuth2::Error => e
     raise unless e.response.status == 404

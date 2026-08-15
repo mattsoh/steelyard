@@ -153,18 +153,19 @@ class Api::MatchesController < ApplicationController
   # ones its history mentions adding or removing, which by definition are no
   # longer legs and so wouldn't be resolved by anything else.
   #
-  # `remote: false` throughout -- the same restriction PublicApi's legs_json
-  # makes, for the same reason. The ledger's fallback fetches an id it doesn't
-  # recognize straight from HCB and caches it under a key with no organization
-  # or user in it, so an id that isn't part of *this* organization's history
-  # could come back resolved off the back of somebody else's request. A leg
-  # this organization's drain doesn't know about is reported as unresolved
-  # instead; the popup already says so in place of the memo.
+  # Legs older than HCB's drained window are resolved through the ledger's
+  # remote fallback, same as the matcher's own transaction list does it -- a
+  # match from two years ago still has to name what it paired. That fallback
+  # fetches as the person asking and caches per organization (see
+  # OrganizationLedger.single_transaction_cache_key), so it cannot answer with
+  # something fetched for an organization this one has no part in. A leg it
+  # still can't resolve is reported unresolved; the popup says so in place of
+  # the memo.
   def referenced_transactions(match, history, ledger)
     ids = (match.incoming_transaction_ids + match.outgoing_transaction_ids).uniq +
       history.entries.flat_map { |e| e.changes.filter_map { |c| c[:transaction_id] } }
 
-    ids.uniq.index_with { |id| ledger.transaction_by_id(id, remote: false) }
+    ids.uniq.index_with { |id| ledger.transaction_by_id(id) }
       .compact.transform_values(&:as_json)
   end
 

@@ -155,12 +155,13 @@ class Api::MatchesControllerTest < ActionController::TestCase
     end
   end
 
-  # The ledger will fetch an id it doesn't recognize straight from HCB and
-  # cache it under a key carrying neither an organization nor a user, so
-  # resolving legs that way would let a transaction from outside this
-  # organization's history be described here off the back of someone else's
-  # request. A leg the drain doesn't know is left unresolved instead.
-  test "a leg outside this organization's history is not fetched to describe it" do
+  # A leg older than HCB's drained window is resolved by fetching it, which the
+  # ledger caches. That fetch happens as whoever is asking, so it can only ever
+  # return what they could already see -- unless a cached answer from somewhere
+  # else is read back instead. Legs name whatever id their author gave them, so
+  # this is reachable: the cache has to be keyed per organization, or one
+  # organization's request answers another's.
+  test "a leg is never described from another organization's cached copy" do
     match = Match.create!(hcb_organization_id: "org_1", discrepancy_cents: 0, created_by: @user)
     match.match_transactions.create!(hcb_organization_id: "org_1", hcb_transaction_id: "txn_in", direction: :incoming)
     match.match_transactions.create!(hcb_organization_id: "org_1", hcb_transaction_id: "txn_elsewhere", direction: :outgoing)
@@ -168,10 +169,10 @@ class Api::MatchesControllerTest < ActionController::TestCase
     # A real store for the duration: the test environment's null_store would
     # drop the write below and let this pass without proving anything.
     with_memory_cache do
-      # Warm exactly the key the fallback reads, as another organization's
-      # request would have left it -- it carries no organization and no user.
+      # Warmed by a request against a different organization, which is the only
+      # place this transaction's contents exist.
       Rails.cache.write(
-        OrganizationLedger.single_transaction_cache_key("txn_elsewhere"),
+        OrganizationLedger.single_transaction_cache_key("org_2", "txn_elsewhere"),
         { "id" => "txn_elsewhere", "date" => "2026-01-01", "memo" => "Another org's grant", "amount_cents" => -500 }
       )
 
