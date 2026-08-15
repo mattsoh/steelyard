@@ -136,9 +136,14 @@ function renderDetailsModal(t) {
   title.textContent = `${t.date} — ${fmtDetail(t.amount)}`;
 
   const isManual = isManualTransaction(t);
+  const matchId = matchIdForOpenTransaction(t);
+  const viewMatchHtml = matchId
+    ? `<button type="button" class="secondary" id="detail-view-match" data-match="${escapeHtml(String(matchId))}" title="Open the match this transaction belongs to">⚖ View match</button>`
+    : "";
   const actionsHtml = isManual
-    ? `<div class="modal-actions"><button type="button" class="danger" id="detail-delete-tx">Delete transaction</button></div>`
+    ? `<div class="modal-actions">${viewMatchHtml}<button type="button" class="danger" id="detail-delete-tx">Delete transaction</button></div>`
     : `<div class="modal-actions">
+         ${viewMatchHtml}
          <button type="button" class="secondary" id="detail-refresh-tx" title="Re-check this one transaction against HCB — picks up an amount, status or memo that changed since it was loaded">↻ Refresh from HCB</button>
          <span class="detail-refresh-note" id="detail-refresh-note"></span>
        </div>`;
@@ -153,6 +158,32 @@ function renderDetailsModal(t) {
   if (!isManual) {
     document.getElementById("detail-refresh-tx").addEventListener("click", refreshDetailTransaction);
   }
+  // Closed on the way out, not left underneath: this modal stacks *above* the
+  // match popup (a leg's details open over it, which is the usual direction),
+  // so opening a match without standing down would put the transaction the
+  // user just navigated away from on top of what they asked for.
+  const viewMatch = document.getElementById("detail-view-match");
+  if (viewMatch) {
+    viewMatch.addEventListener("click", () => {
+      const id = viewMatch.dataset.match;
+      hideDetailsModal();
+      showMatchModal(id);
+    });
+  }
+}
+
+// Which match this transaction belongs to, as the host page knows it -- app.js
+// and ledger.js each answer from the match list they already hold, so this
+// costs no request. Withheld when the match popup it was opened *from* is
+// already showing that match, where the button would only reopen what's behind
+// it.
+function matchIdForOpenTransaction(t) {
+  if (typeof matchIdForTransaction !== "function") return null;
+
+  const id = matchIdForTransaction(t.id);
+  if (!id) return null;
+  if (typeof matchModalIsOpen === "function" && matchModalIsOpen(id)) return null;
+  return id;
 }
 
 function setRefreshNote(html, isWarning) {
@@ -352,9 +383,20 @@ function wireRowControls(root) {
       if (t) showDetailsModal(t);
     });
   });
+  wireHcbLinks(root);
+  wireCopyCodes(root);
+}
+
+// Split out of wireRowControls so the match popup (match_detail.js) can reuse
+// them: it renders the same codes and links, but resolves its own
+// transactions from the match response rather than from the page's byId map.
+function wireHcbLinks(root) {
   root.querySelectorAll(".hcb-link").forEach((el) => {
     el.addEventListener("click", (e) => e.stopPropagation());
   });
+}
+
+function wireCopyCodes(root) {
   root.querySelectorAll(".hcb-code").forEach((el) => {
     el.addEventListener("click", async (e) => {
       e.stopPropagation();

@@ -30,7 +30,17 @@ bin/rails test
 ## Change history
 
 Every change to a match, its legs, its adjustments, and an organization's cutoff is written to the
-`versions` table by PaperTrail. There's no UI for it yet; read it from the console:
+`versions` table by PaperTrail.
+
+Open a match ("View" on any match row, or the ⓘ on a matched transaction in the ledger) and you get
+it back as a popup: both sides as full transactions, who matched them and when, who last touched it
+since, and a **Change history** dropdown listing every action behind it. One action reads as one
+entry — `Matches::Update` replaces every leg, so a single edit writes half a dozen versions, and
+`Matches::History` regroups them by the request that wrote them. That popup has its own link
+(`/organizations/<org>/matches/<id>`, the "Copy link" button), which opens the matcher with the
+match already open over it.
+
+For anything the popup doesn't answer, read the table from the console:
 
 ```ruby
 match.versions.map { |v| [ v.created_at, v.event, v.actor_name, v.object_changes ] }
@@ -47,8 +57,8 @@ AuditVersion.for_organization("org_...").order(created_at: :desc)
 discrepancy re-derived after HCB restated a transaction (see `Matches::Resync`), `legacy_import`
 for records brought over from the pre-Rails app.
 
-This is a record, not a mechanism — nothing reads it to decide behaviour, and undoing a match is
-still `undone_at`/`undone_by_user_id` on the match itself.
+This is a record, not a mechanism — nothing reads it to decide behaviour (the popup above only
+displays it), and undoing a match is still `undone_at`/`undone_by_user_id` on the match itself.
 
 ## API and MCP
 
@@ -80,8 +90,10 @@ tokens). Note claude.ai reaches the server from Anthropic's egress range, so a c
 publicly reachable HTTPS host — `localhost` works with Claude Code only.
 
 Tools: `list_organizations`, `get_reconciliation_summary`, `list_transactions`, `get_transaction`,
-`list_matches`, `create_match`, `undo_match`. The last two need the member or manager role, and
-`undo_match` reverses anything `create_match` did.
+`list_matches`, `get_match`, `create_match`, `undo_match`. The last two need the member or manager
+role, and `undo_match` reverses anything `create_match` did. `get_match` is the one to reach for
+before undoing somebody else's work: it carries the same change history the detail popup shows, so
+a match two people have already edited reads as a disagreement rather than a mistake.
 
 ### REST
 
@@ -93,6 +105,7 @@ Tools: `list_organizations`, `get_reconciliation_summary`, `list_transactions`, 
 | `GET`    | `/api/v1/organizations/:id/transactions`              | `status`, `direction`, `query`, `after`, `before`, `min_amount`, `max_amount`, `include_before_cutoff`, `limit`, `offset` |
 | `GET`    | `/api/v1/organizations/:id/transactions/:txn_id`      | One transaction, with the match it belongs to             |
 | `GET`    | `/api/v1/organizations/:id/matches`                   | `status=all\|balanced\|unbalanced`                        |
+| `GET`    | `/api/v1/organizations/:id/matches/:match_id`         | One match with its change history; answers for undone ones |
 | `POST`   | `/api/v1/organizations/:id/matches`                   | `incoming_ids`, `outgoing_ids`, `note`                    |
 | `DELETE` | `/api/v1/organizations/:id/matches/:match_id`         | Undo a match                                              |
 

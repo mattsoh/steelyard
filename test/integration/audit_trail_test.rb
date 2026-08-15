@@ -60,6 +60,45 @@ class AuditTrailTest < ActionDispatch::IntegrationTest
     assert_equal @user, Match.last.versions.last.user
   end
 
+  # What the detail popup and the match rows are actually reading: the log,
+  # regrouped into one entry per thing somebody did. Worth doing end to end
+  # rather than against hand-written versions, because the grouping keys on the
+  # request id, which only a real request through the whole stack carries.
+  test "a match reports who last edited it, and what that edit did" do
+    editor = User.create!(hcb_user_id: "usr_2", name: "Grace", access_token: "a", refresh_token: "b", token_expires_at: 1.hour.from_now)
+    match = nil
+
+    with_hcb do
+      sign_in_via_hcb!(@user)
+      post "/organizations/org_1/api/matches", params: { incoming_ids: [ "txn_1" ], outgoing_ids: [ "txn_2" ] }
+      assert_response :created
+      match = Match.last
+
+      sign_in_via_hcb!(editor)
+      patch "/organizations/org_1/api/matches/#{match.id}",
+        params: { incoming_ids: [ "txn_1" ], outgoing_ids: [ "txn_4" ] }
+      assert_response :success
+
+      get "/organizations/org_1/api/matches/#{match.id}"
+      assert_response :success
+    end
+
+    detail = JSON.parse(response.body)
+    assert_equal "Matt", detail["created_by_name"]
+    assert_equal true, detail["edited"]
+    assert_equal "Grace", detail["last_edited_by_name"]
+
+    # One edit, one entry -- not the five versions replacing both legs and
+    # saving the match actually wrote.
+    assert_equal [ "created", "edited" ], detail["history"].map { |e| e["action"] }
+    edit = detail["history"].last
+    assert_includes edit["changes"], { "kind" => "leg", "action" => "removed", "direction" => "outgoing", "transaction_id" => "txn_2" }
+    assert_includes edit["changes"], { "kind" => "leg", "action" => "added", "direction" => "outgoing", "transaction_id" => "txn_4" }
+    # The leg it dropped is named in full, though it is no longer part of the
+    # match and nothing else on the page would have loaded it.
+    assert_equal "Grant 1", detail.dig("transactions", "txn_2", "memo")
+  end
+
   # Moving the cutoff cascade-undoes other people's matches. Those undos are
   # only distinguishable from six unrelated manual undos because they share the
   # request that caused them.

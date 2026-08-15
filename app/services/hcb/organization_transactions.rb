@@ -156,7 +156,7 @@ module Hcb
       publish(updated)
       # OrganizationLedger keeps its own long-lived per-id copy for ids that
       # aren't in the drain; drop it so it can't shadow what we just re-fetched.
-      Rails.cache.delete(OrganizationLedger.single_transaction_cache_key(id))
+      Rails.cache.delete(OrganizationLedger.single_transaction_cache_key(@organization_id, id))
 
       RefreshedTransaction.new(previous: previous, current: fresh)
     end

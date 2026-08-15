@@ -18,11 +18,23 @@ class Match < ApplicationRecord
   # which would issue a fresh query per call regardless of `includes`/prior
   # loading -- callers that preload, or just built :match_transactions (e.g.
   # right after Matches::Create), get this for free with no N+1 per match.
-  def incoming_transaction_ids
-    match_transactions.select { |mt| mt.undone_at.nil? && mt.incoming? }.map(&:hcb_transaction_id)
+  #
+  # Undoing a match marks every leg undone alongside it, so an undone match has
+  # no live legs at all and these would go empty -- which is no answer for the
+  # one view that exists to explain what happened to it. A leg is only ever
+  # undone together with its match, so reading undone legs back on an undone
+  # match is the same set, and leaves every other caller unchanged.
+  def incoming_transaction_ids(include_undone: undone?)
+    leg_ids(:incoming?, include_undone)
   end
 
-  def outgoing_transaction_ids
-    match_transactions.select { |mt| mt.undone_at.nil? && mt.outgoing? }.map(&:hcb_transaction_id)
+  def outgoing_transaction_ids(include_undone: undone?)
+    leg_ids(:outgoing?, include_undone)
+  end
+
+  private
+
+  def leg_ids(direction, include_undone)
+    match_transactions.select { |mt| (include_undone || mt.undone_at.nil?) && mt.public_send(direction) }.map(&:hcb_transaction_id)
   end
 end

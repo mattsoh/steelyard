@@ -19,6 +19,11 @@ class AuditVersion < ApplicationRecord
 
   def system? = whodunnit.to_s.start_with?(SYSTEM_PREFIX)
 
+  # Lets a caller reading many versions at once (Matches::History) resolve
+  # every actor in one query and hand the answers back, instead of each
+  # version looking its own person up.
+  attr_writer :user
+
   # nil for a system change, and also for a user since deleted -- callers get
   # the same "no person to point at" either way.
   def user

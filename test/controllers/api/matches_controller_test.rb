@@ -105,6 +105,127 @@ class Api::MatchesControllerTest < ActionController::TestCase
     assert_equal true, found["conflict"]
   end
 
+  test "show returns the match with its legs resolved and its history" do
+    Hcb::Client.stub :new, @fake_client do
+      stub_membership("reader") do
+        match = Match.create!(hcb_organization_id: "org_1", note: "for the workshop", discrepancy_cents: 0, created_by: @user)
+        match.match_transactions.create!(hcb_organization_id: "org_1", hcb_transaction_id: "txn_in", direction: :incoming)
+        match.match_transactions.create!(hcb_organization_id: "org_1", hcb_transaction_id: "txn_out", direction: :outgoing)
+
+        get :show, params: { organization_id: "org_1", id: match.id }
+        assert_response :success
+
+        body = JSON.parse(response.body)
+        assert_equal [ "txn_in" ], body["incoming_ids"]
+        assert_equal "for the workshop", body["note"]
+        assert_equal false, body["edited"]
+        # The legs come back as whole transactions, so the popup can name them
+        # without the page it opened over having loaded them.
+        assert_equal "Donation", body.dig("transactions", "txn_in", "memo")
+        assert_equal(-100.0, body.dig("transactions", "txn_out", "amount"))
+        assert_equal [ "created" ], body["history"].map { |e| e["action"] }
+        assert body.key?("created_by_name")
+        assert body["created_at"].present?
+      end
+    end
+  end
+
+  # The one view where an undone match is still worth reading: a link to one
+  # should explain what happened to it rather than 404.
+  test "show still answers for a match that has been undone" do
+    Hcb::Client.stub :new, @fake_client do
+      stub_membership("member") do
+        post :create, params: { organization_id: "org_1", incoming_ids: [ "txn_in" ], outgoing_ids: [ "txn_out" ] }
+        match_id = JSON.parse(response.body)["id"]
+        delete :destroy, params: { organization_id: "org_1", id: match_id }
+
+        get :show, params: { organization_id: "org_1", id: match_id }
+        assert_response :success
+
+        body = JSON.parse(response.body)
+        assert_equal true, body["undone"]
+        assert body["undone_at"].present?
+        assert_includes body["history"].map { |e| e["action"] }, "undone"
+        # Undoing marks the legs undone too, so reporting only live ones would
+        # leave the popup saying this match paired nothing at all.
+        assert_equal [ "txn_in" ], body["incoming_ids"]
+        assert_equal [ "txn_out" ], body["outgoing_ids"]
+        assert_equal "Grant", body.dig("transactions", "txn_out", "memo")
+      end
+    end
+  end
+
+  # A leg older than HCB's drained window is resolved by fetching it, which the
+  # ledger caches. That fetch happens as whoever is asking, so it can only ever
+  # return what they could already see -- unless a cached answer from somewhere
+  # else is read back instead. Legs name whatever id their author gave them, so
+  # this is reachable: the cache has to be keyed per organization, or one
+  # organization's request answers another's.
+  test "a leg is never described from another organization's cached copy" do
+    match = Match.create!(hcb_organization_id: "org_1", discrepancy_cents: 0, created_by: @user)
+    match.match_transactions.create!(hcb_organization_id: "org_1", hcb_transaction_id: "txn_in", direction: :incoming)
+    match.match_transactions.create!(hcb_organization_id: "org_1", hcb_transaction_id: "txn_elsewhere", direction: :outgoing)
+
+    # A real store for the duration: the test environment's null_store would
+    # drop the write below and let this pass without proving anything.
+    with_memory_cache do
+      # Warmed by a request against a different organization, which is the only
+      # place this transaction's contents exist.
+      Rails.cache.write(
+        OrganizationLedger.single_transaction_cache_key("org_2", "txn_elsewhere"),
+        { "id" => "txn_elsewhere", "date" => "2026-01-01", "memo" => "Another org's grant", "amount_cents" => -500 }
+      )
+
+      Hcb::Client.stub :new, @fake_client do
+        stub_membership("manager") do
+          get :show, params: { organization_id: "org_1", id: match.id }
+        end
+      end
+    end
+
+    assert_response :success
+    body = JSON.parse(response.body)
+    # Still listed as a leg -- the match really does reference it, and hiding
+    # that would leave the sides not adding up to the discrepancy beside them.
+    assert_equal [ "txn_elsewhere" ], body["outgoing_ids"]
+    assert_not body["transactions"].key?("txn_elsewhere")
+    assert_no_match(/Another org/, response.body)
+  end
+
+  def with_memory_cache
+    original = Rails.cache
+    Rails.cache = ActiveSupport::Cache::MemoryStore.new
+    yield
+  ensure
+    Rails.cache = original
+  end
+
+  # A match link is shareable, so it will end up in front of people who aren't
+  # in the organization. The id in it is not a capability: access is decided
+  # here, by the same membership check as everything else.
+  test "a non-member cannot read a match through its link" do
+    match = Match.create!(hcb_organization_id: "org_1", discrepancy_cents: 0, created_by: @user)
+
+    Hcb::Client.stub :new, @fake_client do
+      stub_membership(nil) do
+        get :show, params: { organization_id: "org_1", id: match.id }
+      end
+    end
+    assert_response :not_found
+    assert_no_match(/discrepancy|history/, response.body)
+  end
+
+  test "show does not reach a match belonging to another organization" do
+    other = Match.create!(hcb_organization_id: "org_2", discrepancy_cents: 0, created_by: @user)
+
+    Hcb::Client.stub :new, @fake_client do
+      stub_membership("manager") do
+        get :show, params: { organization_id: "org_1", id: other.id }
+      end
+    end
+    assert_response :not_found
+  end
+
   test "matching the same transaction twice returns a conflict" do
     Hcb::Client.stub :new, @fake_client do
       stub_membership("manager") do

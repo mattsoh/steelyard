@@ -1,0 +1,18 @@
+<%# The match detail popup, driven by legacy/match_detail.js. Rendered on both
+    legacy pages: the matcher opens it from a match row (and from a match
+    link), the ledger from a transaction that turns out to belong to a match.
+    Wider than the transaction modal because it has two sides and a history to
+    show, not a column of fields. %>
+<div id="match-modal-overlay" class="modal-overlay hidden">
+  <div class="modal-box modal-box-wide">
+    <div class="modal-header">
+      <h3 id="match-modal-title">Match</h3>
+      <div class="modal-header-actions">
+        <span class="match-link-note" id="match-modal-link-note"></span>
+        <button type="button" class="secondary" id="match-modal-copy-link" title="Copy a link that opens this match">🔗 Copy link</button>
+        <button type="button" id="match-modal-close" class="modal-close" aria-label="Close">×</button>
+      </div>
+    </div>
+    <div class="modal-body" id="match-modal-body"></div>
+  </div>
+</div>

@@ -946,10 +946,26 @@ async function deleteMatch(id) {
   render();
 }
 
+// Who made the match and, when someone has since changed it, who that was.
+// Kept to one line: the row's job is the two sides and what they're off by,
+// and the full story (with timestamps and what each change did) is one click
+// away in the detail popup.
 function matchMetaHtml(m) {
   if (!m.created_by_name) return "";
   const when = m.created_at ? new Date(m.created_at).toLocaleDateString() : "";
-  return `<div class="match-meta">Matched by ${escapeHtml(m.created_by_name)}${when ? " on " + when : ""}</div>`;
+  const edited = m.edited && m.last_edited_by_name
+    ? ` <span class="match-meta-edited" title="Last edited ${escapeHtml(new Date(m.last_edited_at).toLocaleString())}">· edited by ${escapeHtml(m.last_edited_by_name)}</span>`
+    : "";
+  return `<div class="match-meta">Matched by ${escapeHtml(m.created_by_name)}${when ? " on " + when : ""}${edited}</div>`;
+}
+
+// The match a transaction belongs to, for the transaction modal's "View match"
+// button (see details.js). Read straight off the match list this page already
+// holds -- a match being edited is deliberately not in it, since its legs are
+// sitting unsaved in the tray rather than in a match anyone can open.
+function matchIdForTransaction(transactionId) {
+  const m = matches.find((x) => x.incoming_ids.includes(transactionId) || x.outgoing_ids.includes(transactionId));
+  return m ? m.id : null;
 }
 
 function conflictBadgeHtml(m) {
@@ -971,13 +987,15 @@ function matchRowHtml(m) {
   // Editing pulls a match out of `matches` (and into the tray) entirely, so
   // this row is never rendered for the match currently being edited -- the
   // disabled state here only guards *other* rows against starting a second
-  // edit (or being undone) while one is already in progress.
+  // edit (or being undone) while one is already in progress. View is exempt:
+  // reading a match changes nothing, so there's nothing to guard.
   const otherRowDisabled = editingMatchId !== null ? "disabled" : "";
   return `<div class="match-row${m.conflict ? " match-row-conflict" : ""}">
     <div class="side-in">${sideIn}</div>
     <div class="side-out">${sideOut}</div>
     <div class="${discClass}">${discText}${conflictBadgeHtml(m)}${matchMetaHtml(m)}</div>
     <div class="match-row-actions">
+      <button class="secondary" data-view="${m.id}" title="Open this match — full details, and who changed what">View</button>
       <button class="secondary" data-edit="${m.id}" ${otherRowDisabled}>Edit</button>
       <button class="danger" data-delete="${m.id}" ${otherRowDisabled}>Undo</button>
     </div>
@@ -996,6 +1014,9 @@ function renderMatchGroup(group, listId, countId, emptyMsg) {
   const sorted = [...group].sort((a, b) => b.id - a.id);
   list.innerHTML = sorted.map(matchRowHtml).join("");
 
+  list.querySelectorAll("[data-view]").forEach((el) => {
+    el.addEventListener("click", () => showMatchModal(el.dataset.view));
+  });
   list.querySelectorAll("[data-edit]").forEach((el) => {
     el.addEventListener("click", () => editMatch(Number(el.dataset.edit)));
   });
