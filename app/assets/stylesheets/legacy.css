@@ -323,6 +323,32 @@ header#stats {
 .row.active { background: #fff8c5; }
 .row.selected { background: #ddf4ff; }
 
+/* Only listed when "Include matched" is on. Greyed all the way through --
+   amount included, which otherwise keeps the blue/pink that says "this is
+   still yours to place" -- because these rows aren't work left to do: clicking
+   one jumps to the match it's already part of. */
+.row.matched { background: var(--bg); color: #8b949e; }
+.row.matched .date,
+.row.matched .amount,
+.row.matched .hcb-code { color: #8b949e; }
+.row.matched:hover { background: #eceff2; }
+
+/* Sized to its own text rather than the panel width, so the clickable area is
+   the checkbox and its label and not the empty strip beside them. */
+.matched-toggle {
+  display: flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 5px;
+  font-size: 11px;
+  color: #656d76;
+  cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.matched-toggle input { margin: 0; cursor: pointer; }
+
 .tray {
   position: sticky;
   top: 62px;
@@ -506,6 +532,16 @@ button.danger {
 .match-row-actions {
   display: flex;
   gap: 6px;
+}
+
+/* Confirms which match a click on a greyed-out matched row landed on. The
+   scroll alone isn't enough to tell: the match sections scroll inside
+   themselves, so the row can already be in view and nothing visibly moves. */
+.match-row-flash { animation: match-row-flash 1.4s ease-out; }
+
+@keyframes match-row-flash {
+  0%, 40% { background: #fff8c5; }
+  100% { background: transparent; }
 }
 
 .match-row .side-in { color: var(--in-color); }

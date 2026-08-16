@@ -169,6 +169,9 @@ const FILTER_FIELD_IDS = [
   "search-outgoing", "search-outgoing-amount", "search-outgoing-after", "search-outgoing-before",
   "sort-incoming", "sort-outgoing",
 ];
+// Read/written through .checked rather than .value, so they're kept apart from
+// the text/select fields above rather than special-cased inside the loops.
+const FILTER_CHECKBOX_IDS = ["include-matched-incoming", "include-matched-outgoing"];
 
 // Persists the search/sort controls to localStorage so an accidental refresh
 // (or coming back later) doesn't silently reset a search someone was in the
@@ -178,6 +181,7 @@ function saveFilterSnapshot() {
   try {
     const snap = {};
     for (const id of FILTER_FIELD_IDS) snap[id] = document.getElementById(id).value;
+    for (const id of FILTER_CHECKBOX_IDS) snap[id] = document.getElementById(id).checked;
     localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify(snap));
   } catch (e) {}
 }
@@ -193,6 +197,9 @@ function restoreFilterSnapshot() {
   }
   for (const id of FILTER_FIELD_IDS) {
     if (snap[id] !== undefined) document.getElementById(id).value = snap[id];
+  }
+  for (const id of FILTER_CHECKBOX_IDS) {
+    if (snap[id] !== undefined) document.getElementById(id).checked = !!snap[id];
   }
 }
 
@@ -609,7 +616,12 @@ function memoOrCodeMatches(t, query) {
 
 function matchesRowHtml(t, extraClass) {
   const cls = t.direction + (extraClass ? " " + extraClass : "");
-  return `<div class="row ${cls}" data-id="${t.id}">
+  // The greyed-out state is only half the story -- the row still looks
+  // clickable, so say what clicking it does before anyone finds out.
+  const rowTitle = (extraClass || "").split(" ").includes("matched")
+    ? ` title="Already matched — click to jump to its match below"`
+    : "";
+  return `<div class="row ${cls}" data-id="${t.id}"${rowTitle}>
     <div class="date">${t.date}</div>
     <div class="memo" title="${escapeHtml(t.memo)}">
       <div class="memo-text">${escapeHtml(t.memo)}</div>
@@ -632,7 +644,17 @@ function sortTransactions(list, sortValue) {
 }
 
 function renderLists() {
-  const unmatched = unmatchedTransactions();
+  const used = usedIds();
+  // Opt-in per direction: the panels are lists of work left to do, so matched
+  // transactions stay out of them unless someone asks to search the matched
+  // ones too (to find where a transaction ended up, most often to pull it back
+  // out of the match it's in). They're listed greyed out and aren't selectable
+  // -- see onIncomingClick/onOutgoingClick, which jump to the match instead.
+  const showMatchedIncoming = document.getElementById("include-matched-incoming").checked;
+  const showMatchedOutgoing = document.getElementById("include-matched-outgoing").checked;
+  const incomingPool = showMatchedIncoming ? allTransactions : allTransactions.filter((t) => !used.has(t.id));
+  const outgoingPool = showMatchedOutgoing ? allTransactions : allTransactions.filter((t) => !used.has(t.id));
+
   const incomingFilter = document.getElementById("search-incoming").value.trim().toLowerCase();
   const incomingAmountFilter = document.getElementById("search-incoming-amount").value;
   const incomingAfterFilter = document.getElementById("search-incoming-after").value;
@@ -642,7 +664,7 @@ function renderLists() {
   const outgoingAfterFilter = document.getElementById("search-outgoing-after").value;
   const outgoingBeforeFilter = document.getElementById("search-outgoing-before").value;
 
-  const incomingFiltered = unmatched.filter(
+  const incomingFiltered = incomingPool.filter(
     (t) =>
       t.direction === "in" &&
       memoOrCodeMatches(t, incomingFilter) &&
@@ -651,7 +673,7 @@ function renderLists() {
   );
   const incoming = sortTransactions(incomingFiltered, document.getElementById("sort-incoming").value);
 
-  const outgoingFiltered = unmatched.filter(
+  const outgoingFiltered = outgoingPool.filter(
     (t) =>
       t.direction === "out" &&
       memoOrCodeMatches(t, outgoingFilter) &&
@@ -660,24 +682,32 @@ function renderLists() {
   );
   const outgoing = sortTransactions(outgoingFiltered, document.getElementById("sort-outgoing").value);
 
-  currentIncomingOrder = incoming.map((t) => t.id);
-  currentOutgoingOrder = outgoing.map((t) => t.id);
+  // Matched rows are left out of the shift-click order: they're on screen, but
+  // they can't be selected, so a range drawn across one shouldn't swallow it.
+  currentIncomingOrder = incoming.filter((t) => !used.has(t.id)).map((t) => t.id);
+  currentOutgoingOrder = outgoing.filter((t) => !used.has(t.id)).map((t) => t.id);
 
   // While the drain is still in progress (including mid-stream, before
   // transactionsLoaded flips true), an empty filtered list just means the
   // data hasn't arrived yet -- showing "Nothing unmatched" there would claim
   // the org has no unmatched transactions when it just hasn't loaded them.
-  const emptyHtml = transactionsLoaded ? `<div class="empty-msg">Nothing unmatched 🎉</div>` : LOADING_HTML;
+  const emptyHtml = (showMatched) =>
+    transactionsLoaded
+      ? `<div class="empty-msg">${showMatched ? "Nothing to show." : "Nothing unmatched 🎉"}</div>`
+      : LOADING_HTML;
+
+  const rowClass = (t, selectedIds, selectedClass) =>
+    used.has(t.id) ? "matched" : selectedIds.includes(t.id) ? selectedClass : "";
 
   const inList = document.getElementById("list-incoming");
   inList.innerHTML = incoming.length
-    ? incoming.map((t) => matchesRowHtml(t, selectedIncomingIds.includes(t.id) ? "active" : "")).join("")
-    : emptyHtml;
+    ? incoming.map((t) => matchesRowHtml(t, rowClass(t, selectedIncomingIds, "active"))).join("")
+    : emptyHtml(showMatchedIncoming);
 
   const outList = document.getElementById("list-outgoing");
   outList.innerHTML = outgoing.length
-    ? outgoing.map((t) => matchesRowHtml(t, selectedOutgoingIds.includes(t.id) ? "selected" : "")).join("")
-    : emptyHtml;
+    ? outgoing.map((t) => matchesRowHtml(t, rowClass(t, selectedOutgoingIds, "selected"))).join("")
+    : emptyHtml(showMatchedOutgoing);
 
   inList.querySelectorAll(".row").forEach((el) => {
     el.addEventListener("click", (e) => onIncomingClick(el.dataset.id, e));
@@ -703,7 +733,35 @@ function rangeSelection(order, selected, anchorId, id) {
   return merged;
 }
 
+// A matched transaction can't go into the tray -- it's already accounted for --
+// so clicking its row takes you to the match it's part of instead, which is
+// where it can be edited or undone. Returns whether the click belonged to a
+// match at all: a matched row is never selectable, even in the corner where the
+// match's own row hasn't been rendered yet and there's nothing to scroll to.
+function jumpToMatchForTransaction(transactionId) {
+  const matchId = matchIdForTransaction(transactionId);
+  if (matchId === null) return false;
+  const row = document.getElementById(`match-row-${matchId}`);
+  if (!row) return true;
+
+  // Smooth scrolling is what makes the jump legible (it shows you where you
+  // went), but it's exactly the kind of motion prefers-reduced-motion is about,
+  // so honour that and land there directly instead. The flash below stays
+  // either way -- it's a colour change, not movement.
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  row.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "center" });
+  // Restarting the animation matters when the same match is clicked twice: the
+  // page may not scroll at all the second time, so the flash is the only sign
+  // the click did anything. Reading offsetWidth forces the reflow that makes
+  // removing and re-adding the class count as two separate animations.
+  row.classList.remove("match-row-flash");
+  void row.offsetWidth;
+  row.classList.add("match-row-flash");
+  return true;
+}
+
 function onIncomingClick(id, e) {
+  if (jumpToMatchForTransaction(id)) return;
   if (e && e.shiftKey && lastIncomingClickId !== null) {
     const merged = rangeSelection(currentIncomingOrder, selectedIncomingIds, lastIncomingClickId, id);
     if (merged) {
@@ -724,6 +782,7 @@ function onIncomingClick(id, e) {
 }
 
 function onOutgoingClick(id, e) {
+  if (jumpToMatchForTransaction(id)) return;
   if (e && e.shiftKey && lastOutgoingClickId !== null) {
     const merged = rangeSelection(currentOutgoingOrder, selectedOutgoingIds, lastOutgoingClickId, id);
     if (merged) {
@@ -1032,7 +1091,9 @@ function matchRowHtml(m) {
   // edit (or being undone) while one is already in progress. View is exempt:
   // reading a match changes nothing, so there's nothing to guard.
   const otherRowDisabled = editingMatchId !== null ? "disabled" : "";
-  return `<div class="match-row${m.conflict ? " match-row-conflict" : ""}">
+  // Addressable so a click on a greyed-out matched row in the panels above can
+  // scroll straight to it -- see jumpToMatchForTransaction.
+  return `<div class="match-row${m.conflict ? " match-row-conflict" : ""}" id="match-row-${m.id}">
     <div class="side-in">${sideIn}</div>
     <div class="side-out">${sideOut}</div>
     <div class="${discClass}">${discText}${conflictBadgeHtml(m)}${matchMetaHtml(m)}</div>
@@ -1348,6 +1409,10 @@ document.getElementById("search-outgoing-after").addEventListener("input", debou
 document.getElementById("search-outgoing-before").addEventListener("input", debouncedRenderLists);
 document.getElementById("sort-incoming").addEventListener("change", renderLists);
 document.getElementById("sort-outgoing").addEventListener("change", renderLists);
+// Like the sort selects, one change per click -- no debouncing needed.
+for (const id of FILTER_CHECKBOX_IDS) {
+  document.getElementById(id).addEventListener("change", renderLists);
+}
 
 
 const TRAY_WIDTH_STORAGE_KEY = "steelyard.trayWidth";

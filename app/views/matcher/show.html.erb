@@ -101,6 +101,13 @@
           <button type="button" class="search-clear" data-clear-target="search-incoming-before" aria-label="Clear before-date filter">×</button>
         </div>
       </div>
+      <%# Off by default: the panel's job is the work that's left. Turned on,
+          already-matched transactions appear greyed out and lead back to the
+          match they're in rather than into the tray. %>
+      <label class="matched-toggle" for="include-matched-incoming" title="Also list incoming transactions that are already part of a match. They show greyed out, and clicking one jumps to its match below instead of selecting it.">
+        <input type="checkbox" id="include-matched-incoming">
+        Include matched
+      </label>
     </div>
     <div class="list" id="list-incoming">
       <div class="empty-msg loading-msg"><span class="loading-spinner"></span>Loading transactions&hellip;</div>
@@ -172,6 +179,10 @@
           <button type="button" class="search-clear" data-clear-target="search-outgoing-before" aria-label="Clear before-date filter">×</button>
         </div>
       </div>
+      <label class="matched-toggle" for="include-matched-outgoing" title="Also list outgoing transactions that are already part of a match. They show greyed out, and clicking one jumps to its match below instead of selecting it.">
+        <input type="checkbox" id="include-matched-outgoing">
+        Include matched
+      </label>
     </div>
     <div class="list" id="list-outgoing">
       <div class="empty-msg loading-msg"><span class="loading-spinner"></span>Loading transactions&hellip;</div>
