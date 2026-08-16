@@ -107,6 +107,7 @@ a match two people have already edited reads as a disagreement rather than a mis
 | `GET`    | `/api/v1/organizations/:id/matches`                   | `status=all\|balanced\|unbalanced`                        |
 | `GET`    | `/api/v1/organizations/:id/matches/:match_id`         | One match with its change history; answers for undone ones |
 | `POST`   | `/api/v1/organizations/:id/matches`                   | `incoming_ids`, `outgoing_ids`, `note`                    |
+| `PATCH`  | `/api/v1/organizations/:id/matches/:match_id`         | `incoming_ids`, `outgoing_ids`, `note` -- partial; anything you leave out stays as it is |
 | `DELETE` | `/api/v1/organizations/:id/matches/:match_id`         | Undo a match                                              |
 
 ```

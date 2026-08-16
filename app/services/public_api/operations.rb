@@ -170,6 +170,43 @@ module PublicApi
       match_json(org, result.match)
     end
 
+    # Partial by design, the same as the browser API's PATCH: a field left nil
+    # is left as it stands rather than emptied, so a caller correcting a note
+    # doesn't have to re-state which transactions the match pairs. Passing a
+    # side rewrites that side; the other keeps its legs either way.
+    def update_match(organization_id, match_id, incoming_ids: nil, outgoing_ids: nil, note: nil)
+      org = scope_for(organization_id, needs: :matcher)
+      match = Match.active.for_organization(org.organization_id).find_by(id: match_id)
+      incoming = incoming_ids.nil? ? nil : id_list(incoming_ids, "incoming_ids")
+      outgoing = outgoing_ids.nil? ? nil : id_list(outgoing_ids, "outgoing_ids")
+
+      # Every leg the match will have afterwards, including the side that
+      # wasn't sent -- its amounts still count toward the discrepancy. Nothing
+      # to resolve at all for a note-only save.
+      by_id = if match && (incoming || outgoing)
+        ids = (incoming || match.incoming_transaction_ids) + (outgoing || match.outgoing_transaction_ids)
+        ids.uniq.index_with { |id| org.ledger.transaction_by_id(id) }
+      else
+        {}
+      end
+
+      result = Matches::Update.new(
+        match: match,
+        user: @user,
+        incoming_ids: incoming,
+        outgoing_ids: outgoing,
+        note: note,
+        transactions_by_id: by_id
+      ).call
+      raise Error.new(result.error, status: result.status) unless result.success?
+
+      # With the history, since an edit has by definition just made one: the
+      # caller sees its own change recorded rather than having to re-read the
+      # match to find out how it was logged.
+      history = Matches::History.for_match(result.match)
+      match_json(org, result.match, history: history).merge(history: history.entries.map(&:as_json))
+    end
+
     def undo_match(organization_id, match_id)
       org = scope_for(organization_id, needs: :matcher)
       match = Match.active.for_organization(org.organization_id).find_by(id: match_id)

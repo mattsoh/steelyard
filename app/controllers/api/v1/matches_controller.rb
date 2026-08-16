@@ -25,6 +25,19 @@ module Api
         ), status: :created
       end
 
+      # Partial: a field the caller didn't send is left as it stands, so
+      # correcting a note can't silently empty the legs. Hence params.key?
+      # rather than reading the values straight out -- an absent field and one
+      # sent as null have to arrive at the operation as the same nil.
+      def update
+        render json: operations.update_match(
+          params[:organization_id], params[:id],
+          incoming_ids: params.key?(:incoming_ids) ? params[:incoming_ids] : nil,
+          outgoing_ids: params.key?(:outgoing_ids) ? params[:outgoing_ids] : nil,
+          note: params.key?(:note) ? params[:note].to_s : nil
+        )
+      end
+
       # Undo rather than delete: the match is marked undone and its legs freed,
       # the same reversible operation the matcher's "Undo" button performs.
       def destroy

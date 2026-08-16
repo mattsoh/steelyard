@@ -186,6 +186,57 @@ class ApiV1Test < ActionDispatch::IntegrationTest
     end
   end
 
+  test "an edit leaves alone whatever it didn't mention" do
+    with_hcb("member") do
+      post "/api/v1/organizations/org_1/matches",
+           params: { incoming_ids: [ "txn_in" ], outgoing_ids: [] }, headers: auth_headers, as: :json
+      id = body["id"]
+
+      # Note only: the leg the match already had has to survive it, and the
+      # discrepancy it was carrying with it.
+      patch "/api/v1/organizations/org_1/matches/#{id}",
+            params: { note: "still waiting on the grant" }, headers: auth_headers, as: :json
+      assert_response :success
+      assert_equal "still waiting on the grant", body["note"]
+      assert_equal [ "txn_in" ], body["incoming_ids"]
+      assert_in_delta 100.0, body["discrepancy"], 0.001
+
+      # The edit is recorded, and comes back with the response rather than
+      # having to be fetched again.
+      assert_equal true, body["edited"]
+      assert_equal "Matt", body["last_edited_by"]
+      assert_equal 2, body["history"].length
+
+      # Filling in the missing side balances it, and leaves the note standing.
+      patch "/api/v1/organizations/org_1/matches/#{id}",
+            params: { outgoing_ids: [ "txn_out" ] }, headers: auth_headers, as: :json
+      assert_response :success
+      assert_equal true, body["balanced"]
+      assert_equal [ "txn_in" ], body["incoming_ids"]
+      assert_equal "still waiting on the grant", body["note"]
+    end
+  end
+
+  test "a reader cannot edit a match, and no one can edit one that is undone" do
+    match = nil
+    with_hcb("member") do
+      post "/api/v1/organizations/org_1/matches",
+           params: { incoming_ids: [ "txn_in" ], outgoing_ids: [ "txn_out" ] }, headers: auth_headers, as: :json
+      match = body["id"]
+    end
+
+    with_hcb("reader") do
+      patch "/api/v1/organizations/org_1/matches/#{match}", params: { note: "no" }, headers: auth_headers, as: :json
+      assert_response :forbidden
+    end
+
+    with_hcb("member") do
+      delete "/api/v1/organizations/org_1/matches/#{match}", headers: auth_headers
+      patch "/api/v1/organizations/org_1/matches/#{match}", params: { note: "no" }, headers: auth_headers, as: :json
+      assert_response :not_found
+    end
+  end
+
   test "one match comes back with the history behind it" do
     id = nil
 

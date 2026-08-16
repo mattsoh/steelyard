@@ -57,6 +57,7 @@ Rails.application.routes.draw do
         get "matches",          to: "matches#index"
         get "matches/:id",      to: "matches#show"
         post "matches",         to: "matches#create"
+        patch "matches/:id",    to: "matches#update"
         delete "matches/:id",   to: "matches#destroy"
       end
     end
