@@ -296,4 +296,50 @@ class Api::MatchesControllerTest < ActionController::TestCase
     assert_response :forbidden
     assert_nil match.reload.note
   end
+
+  # A member of org_1 naming a transaction that belongs to another org they can
+  # see. HCB will answer a single-transaction fetch for it, and the ledger used
+  # to cache that answer under org_1's key and store it as a leg -- putting a
+  # foreign transaction's memo and amount in front of every org_1 member who
+  # later read the match.
+  test "a leg outside the organization's own history is refused on create" do
+    Hcb::Client.stub :new, foreign_client do
+      stub_membership("member") do
+        post :create, params: { organization_id: "org_1", incoming_ids: [ "txn_in" ], outgoing_ids: [ "txn_elsewhere" ] }
+      end
+    end
+
+    assert_response :unprocessable_entity
+    assert_equal 0, Match.count
+  end
+
+  test "a leg outside the organization's own history is refused on update" do
+    match = nil
+    Hcb::Client.stub :new, foreign_client do
+      stub_membership("member") do
+        post :create, params: { organization_id: "org_1", incoming_ids: [ "txn_in" ], outgoing_ids: [ "txn_out" ] }
+        assert_response :created
+        match = Match.find(JSON.parse(response.body)["id"])
+
+        patch :update, params: { organization_id: "org_1", id: match.id, outgoing_ids: [ "txn_elsewhere" ] }
+      end
+    end
+
+    assert_response :unprocessable_entity
+    assert_equal [ "txn_out" ], match.reload.outgoing_transaction_ids
+  end
+
+  private
+
+  def foreign_client
+    FakeHcbClient.new(
+      transactions: [
+        { "id" => "txn_in", "date" => "2026-01-01", "memo" => "Donation", "amount_cents" => 10_000 },
+        { "id" => "txn_out", "date" => "2026-01-02", "memo" => "Grant", "amount_cents" => -10_000 }
+      ],
+      foreign_transactions: [
+        { "id" => "txn_elsewhere", "date" => "2026-01-03", "memo" => "Another org's payroll", "amount_cents" => -50_000 }
+      ]
+    )
+  end
 end

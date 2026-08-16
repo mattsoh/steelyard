@@ -56,10 +56,11 @@ class Api::MatchesController < ApplicationController
     # The legs being matched almost always came from the ledger the frontend
     # already rendered, so look them up there (served from the cached org
     # drain) instead of hitting HCB per id -- one HCB round trip per leg,
-    # serialized, was adding seconds to a "simple" match. transaction_by_id
-    # only falls back to a live HCB call when a leg isn't in the cache.
+    # serialized, was adding seconds to a "simple" match. A leg that isn't in
+    # this organization's drain is rejected rather than fetched from HCB; see
+    # OrganizationLedger#write_legs_by_id.
     ledger = OrganizationLedger.new(hcb_client, organization_id)
-    by_id = (incoming_ids + outgoing_ids).uniq.index_with { |id| ledger.transaction_by_id(id) }
+    by_id = ledger.write_legs_by_id(incoming_ids + outgoing_ids)
 
     result = Matches::Create.new(
       organization_id: organization_id,
@@ -95,7 +96,7 @@ class Api::MatchesController < ApplicationController
     # amounts still count toward the discrepancy.
     by_id = if match && (incoming_ids || outgoing_ids)
       ids = (incoming_ids || match.incoming_transaction_ids) + (outgoing_ids || match.outgoing_transaction_ids)
-      ids.uniq.index_with { |id| ledger.transaction_by_id(id) }
+      ledger.write_legs_by_id(ids, existing: match.incoming_transaction_ids + match.outgoing_transaction_ids)
     else
       {}
     end
@@ -173,12 +174,12 @@ class Api::MatchesController < ApplicationController
   #
   # Legs older than HCB's drained window are resolved through the ledger's
   # remote fallback, same as the matcher's own transaction list does it -- a
-  # match from two years ago still has to name what it paired. That fallback
-  # fetches as the person asking and caches per organization (see
-  # OrganizationLedger.single_transaction_cache_key), so it cannot answer with
-  # something fetched for an organization this one has no part in. A leg it
-  # still can't resolve is reported unresolved; the popup says so in place of
-  # the memo.
+  # match from two years ago still has to name what it paired. Reading is the
+  # permissive side on purpose: every leg had to be inside this organization's
+  # drain to be stored in the first place (OrganizationLedger#write_legs_by_id),
+  # so the fallback is re-resolving an id this organization already vouched
+  # for, not accepting a new one. A leg it still can't resolve is reported
+  # unresolved; the popup says so in place of the memo.
   def referenced_transactions(match, history, ledger)
     ids = (match.incoming_transaction_ids + match.outgoing_transaction_ids).uniq +
       history.entries.flat_map { |e| e.changes.filter_map { |c| c[:transaction_id] } }

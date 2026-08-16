@@ -80,11 +80,17 @@ Rails.application.configure do
   config.active_record.attributes_for_inspect = [ :id ]
 
   # Enable DNS rebinding protection and other `Host` header attacks.
-  # config.hosts = [
-  #   "example.com",     # Allow requests from example.com
-  #   /.*\.example\.com/ # Allow requests from subdomains like `www.example.com`
-  # ]
   #
-  # Skip DNS rebinding protection for the default health check endpoint.
-  # config.host_authorization = { exclude: ->(request) { request.path == "/up" } }
+  # Driven by APP_HOST (comma-separated) rather than hardcoded because the
+  # production domain isn't settled yet -- see config/deploy.yml. This matters
+  # more here than in a plain Rails app: the OAuth discovery document and the
+  # issuer/endpoint URLs in it are built from request.base_url, so an
+  # unvalidated Host header is echoed back to clients as the authorization
+  # server's own address.
+  hosts = ENV.fetch("APP_HOST", "").split(",").map(&:strip).reject(&:blank?)
+  if hosts.any?
+    config.hosts = hosts
+    # The load balancer health-checks by IP, before any Host is resolved.
+    config.host_authorization = { exclude: ->(request) { request.path == "/up" } }
+  end
 end

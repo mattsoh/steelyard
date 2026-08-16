@@ -5,8 +5,14 @@ class FakeHcbClient
 
   # `comments` is keyed by transaction id, matching HCB's per-transaction
   # comments endpoint; anything not listed simply has none.
-  def initialize(transactions: [], members: [], user: {}, organizations: [], user_id: nil, comments: {})
+  # `foreign_transactions` are fetchable by id but never appear in this
+  # organization's paged list -- HCB answers a single-transaction request for
+  # anything the asking user can see, including another organization they
+  # belong to. That gap between "fetchable" and "ours" is what
+  # OrganizationLedger#write_legs_by_id exists to close.
+  def initialize(transactions: [], members: [], user: {}, organizations: [], user_id: nil, comments: {}, foreign_transactions: [])
     @transactions = transactions
+    @foreign_transactions = foreign_transactions
     @members = members
     @user = user
     @organizations = organizations
@@ -54,7 +60,7 @@ class FakeHcbClient
   end
 
   def transaction(id)
-    @transactions.find { |t| t["id"] == id }
+    (@transactions + @foreign_transactions).find { |t| t["id"] == id }
   end
 
   def comments(transaction_id)

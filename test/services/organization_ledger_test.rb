@@ -64,4 +64,37 @@ class OrganizationLedgerTest < ActiveSupport::TestCase
     assert_equal :hidden, ledger.classify(%w[txn_1 txn_2])
     assert_equal :visible, ledger.classify(%w[txn_3 txn_5])
   end
+
+  test "transaction_by_id falls back to a live fetch for an id outside the drain" do
+    assert_equal "txn_far", foreign_ledger.transaction_by_id("txn_far")&.id
+  end
+
+  test "write_legs_by_id refuses an id this organization's drain doesn't contain" do
+    by_id = foreign_ledger.write_legs_by_id(%w[txn_1 txn_far])
+
+    assert_equal "txn_1", by_id["txn_1"]&.id
+    assert_nil by_id["txn_far"], "a transaction outside the org's drain must not resolve for a write"
+  end
+
+  test "write_legs_by_id still resolves legs a match already holds" do
+    # An old match can name a transaction that has since aged out of the drain.
+    # It was checked when it was added, so re-resolving it must keep working --
+    # otherwise editing that match becomes impossible rather than safer.
+    by_id = foreign_ledger.write_legs_by_id(%w[txn_far], existing: %w[txn_far])
+
+    assert_equal "txn_far", by_id["txn_far"]&.id
+  end
+
+  private
+
+  # A ledger for org_1 whose client can also answer for txn_far -- a
+  # transaction the asking user can see elsewhere, but that is not part of
+  # org_1's history.
+  def foreign_ledger
+    client = FakeHcbClient.new(
+      transactions: @client.transactions("org_1")["data"],
+      foreign_transactions: [ { "id" => "txn_far", "date" => "2026-02-01", "memo" => "Another org", "amount_cents" => -7_500 } ]
+    )
+    OrganizationLedger.new(client, "org_1")
+  end
 end

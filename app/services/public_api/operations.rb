@@ -156,7 +156,7 @@ module PublicApi
 
       # Same lookup the browser API does: legs almost always come from the
       # cached drain, so this doesn't cost an HCB round trip per leg.
-      by_id = (incoming + outgoing).uniq.index_with { |id| org.ledger.transaction_by_id(id) }
+      by_id = org.ledger.write_legs_by_id(incoming + outgoing)
       result = Matches::Create.new(
         organization_id: org.organization_id,
         user: @user,
@@ -185,7 +185,7 @@ module PublicApi
       # to resolve at all for a note-only save.
       by_id = if match && (incoming || outgoing)
         ids = (incoming || match.incoming_transaction_ids) + (outgoing || match.outgoing_transaction_ids)
-        ids.uniq.index_with { |id| org.ledger.transaction_by_id(id) }
+        org.ledger.write_legs_by_id(ids, existing: match.incoming_transaction_ids + match.outgoing_transaction_ids)
       else
         {}
       end
