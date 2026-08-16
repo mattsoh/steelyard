@@ -102,7 +102,6 @@ class OrganizationLedger
     raise unless e.response.status == 404
     nil
   end
-  
   def write_legs_by_id(ids, existing: [])
     existing = existing.to_set
     ids.uniq.index_with { |id| transaction_by_id(id, remote: existing.include?(id)) }
