@@ -15,16 +15,35 @@ class Api::LedgerController < ApplicationController
   # just flags which row the cutoff falls on, matched by id rather than the
   # matcher's index since the two lists aren't in the same order or filtered
   # the same way.
+  #
+  # Those two orders differ in a way worth knowing about: the cutoff's
+  # zero-balance crossings are derived in HCB's drain order (by settled date --
+  # see OrganizationTransactions#write_side_caches), while the rows and running
+  # balance below are ordered by sent date. Where a transaction settles on a
+  # different day than it was sent, the row flagged as the zero point can
+  # therefore carry a running balance that isn't exactly $0.
   def index
     ledger = OrganizationLedger.new(hcb_client, organization_id)
     transactions = Hcb::OrganizationTransactions.new(hcb_client, organization_id).all
-    sorted = transactions.sort_by { |t| [ t["date"].to_s, t["id"].to_s ] }
+    # Sorted by the same date the table displays -- Hcb::TransactionPresenter#date,
+    # i.e. when the transaction was *sent*, which is the date this whole app
+    # reckons in (the matcher's panels and date filters use it too). HCB's own
+    # `date` is the settled one, and sorting by it while showing the sent one
+    # left the ledger reading out of order for every ACH/check/wire where the
+    # two diverge. Id breaks ties so the order is stable across requests.
+    sorted = transactions
+      .map { |t| Hcb::TransactionPresenter.new(t) }
+      .sort_by { |p| [ p.date.to_s, p.id.to_s ] }
     cutoff = ledger.effective_cutoff
 
     running = 0.0
-    rows = sorted.map do |t|
-      presenter = Hcb::TransactionPresenter.new(t)
-      running = (running + presenter.amount).round(2)
+    rows = sorted.map do |presenter|
+      # A declined transaction carries the amount that was *attempted*, and no
+      # money ever moved -- adding it in would skew the balance of every row
+      # after it. It stays in the table (this view is the full history,
+      # declines included), just not in the running total. Same reasoning as
+      # OrganizationLedger#transactions, which rejects them outright.
+      running = (running + presenter.amount).round(2) unless presenter.declined?
       presenter.as_json.merge(running_balance: running, is_zero_point: cutoff&.transaction_id == presenter.id)
     end
 

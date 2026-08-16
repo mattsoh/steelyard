@@ -71,6 +71,16 @@ function dateInRange(date, after, before) {
   return true;
 }
 
+// Newest first, by the date the table shows -- when the transaction was sent,
+// not when it settled. The same order Api::LedgerController builds its rows in
+// (ascending there, reversed on arrival), id-tiebroken the same way, so the
+// provisional rows streamed in below don't visibly reshuffle when the
+// authoritative ledger replaces them.
+function byDateDesc(a, b) {
+  if (a.date !== b.date) return a.date < b.date ? 1 : -1;
+  return String(a.id) < String(b.id) ? 1 : -1;
+}
+
 const LOADING_HTML = `<div class="empty-msg loading-msg"><span class="loading-spinner"></span>Loading transactions…</div>`;
 
 function showLedgerMessage(html) {
@@ -136,11 +146,13 @@ async function load() {
     }).catch(() => {});
 
     await loadPagesStreaming(`${API_BASE}/api/ledger/page`, (rows, totalCount) => {
-      // Pages arrive newest-first, same order the table displays in -- no
-      // reordering needed for this provisional view. Running balance and the
+      // Pages arrive in HCB's own order, which is by settled date -- close to
+      // the order this table shows but not it, so they're re-sorted by the date
+      // the rows actually display (see byDateDesc). Running balance and the
       // zero-point cutoff aren't knowable until the full history is in, so
       // they're left blank until the final, authoritative render below.
       provisional.push(...rows.map((r) => ({ ...r, running_balance: null, is_zero_point: false })));
+      provisional.sort(byDateDesc);
       lastTotalCount = totalCount;
       renderProvisional(totalCount);
     });
