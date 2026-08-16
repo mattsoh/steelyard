@@ -1047,15 +1047,34 @@ document.addEventListener("match:updated", (e) => {
   render();
 });
 
-// Who made the match and, when someone has since changed it, who that was.
-// Kept to one line: the row's job is the two sides and what they're off by,
-// and the full story (with timestamps and what each change did) is one click
-// away in the detail popup.
+// When a match last changed hands: the last edit, or the moment it was made
+// if nobody has touched it since. The sort key for both match sections and
+// their exports -- what someone is looking for after coming back to the page
+// is whatever moved most recently, not whatever happens to have the highest id.
+// Parsed rather than string-compared: these are ISO timestamps from two
+// different sources (the match row and its history), and lexicographic order
+// only holds if they're always written in the same timezone offset.
+function matchTouchedAtMs(m) {
+  const t = Date.parse(m.last_edited_at || m.created_at || "");
+  return Number.isNaN(t) ? 0 : t;
+}
+
+// Most recently touched first, id (i.e. creation order) breaking ties -- which
+// is what an org whose matches were all imported with the same timestamp gets.
+function byRecentlyTouched(a, b) {
+  return matchTouchedAtMs(b) - matchTouchedAtMs(a) || b.id - a.id;
+}
+
+// Who made the match and, when someone has since changed it, who that was and
+// when. Kept to one line: the row's job is the two sides and what they're off
+// by, and the full story (with times of day and what each change did) is one
+// click away in the detail popup, which is also what the tooltip here shows.
 function matchMetaHtml(m) {
   if (!m.created_by_name) return "";
   const when = m.created_at ? new Date(m.created_at).toLocaleDateString() : "";
+  const editedWhen = m.last_edited_at ? " on " + new Date(m.last_edited_at).toLocaleDateString() : "";
   const edited = m.edited && m.last_edited_by_name
-    ? ` <span class="match-meta-edited" title="Last edited ${escapeHtml(new Date(m.last_edited_at).toLocaleString())}">· edited by ${escapeHtml(m.last_edited_by_name)}</span>`
+    ? ` <span class="match-meta-edited" title="Last edited ${escapeHtml(new Date(m.last_edited_at).toLocaleString())}">· edited by ${escapeHtml(m.last_edited_by_name)}${editedWhen}</span>`
     : "";
   return `<div class="match-meta">Matched by ${escapeHtml(m.created_by_name)}${when ? " on " + when : ""}${edited}</div>`;
 }
@@ -1114,7 +1133,7 @@ function renderMatchGroup(group, listId, countId, emptyMsg) {
     return;
   }
 
-  const sorted = [...group].sort((a, b) => b.id - a.id);
+  const sorted = [...group].sort(byRecentlyTouched);
   list.innerHTML = sorted.map(matchRowHtml).join("");
 
   list.querySelectorAll("[data-view]").forEach((el) => {
@@ -1170,6 +1189,11 @@ const MATCH_CSV_COLUMNS = [
   ["Spans cutoff", (m) => (m.conflict ? "yes" : "")],
   ["Matched by", (m) => m.created_by_name],
   ["Matched at", (m) => m.created_at],
+  // The file is ordered by when each match was last touched, so it carries the
+  // column it's sorted on -- otherwise the order reads as arbitrary to anyone
+  // opening it in a spreadsheet. Empty for a match nobody has edited.
+  ["Last edited by", (m) => m.last_edited_by_name],
+  ["Last edited at", (m) => m.last_edited_at],
   ["Note", (m) => m.note],
 ];
 
@@ -1210,10 +1234,11 @@ function downloadUnmatchedCsv(direction) {
   );
 }
 
-// Newest match first, the same order the sections below the panels list them in.
+// Most recently touched first, the same order the sections below the panels
+// list them in.
 function downloadMatchesCsv(kind) {
   const group = kind === "balanced" ? balancedMatches() : unbalancedMatches();
-  const sorted = [...group].sort((a, b) => b.id - a.id);
+  const sorted = [...group].sort(byRecentlyTouched);
 
   downloadCsv(
     csvBasename(kind === "balanced" ? "balanced-matches" : "unbalanced-matches"),
