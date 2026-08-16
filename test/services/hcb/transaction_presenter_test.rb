@@ -23,8 +23,16 @@ class Hcb::TransactionPresenterTest < ActiveSupport::TestCase
     assert_equal(-50.0, presenter.amount)
   end
 
-  test "reads the user name from the sender of an ACH transfer, check, transfer, or Wise transfer" do
-    %w[ach_transfer check transfer wise_transfer].each do |type|
+  test "exposes the bare HCB code alongside the human category label" do
+    presenter = Hcb::TransactionPresenter.new({ "id" => "txn_3", "amount_cents" => 100, "code" => "550" })
+
+    assert_equal "550", presenter.code
+    assert_equal "550", presenter.as_json[:code]
+    assert_equal "Incoming disbursement (550)", presenter.category_label
+  end
+
+  test "reads the user name from the sender of an ACH transfer, check, transfer, wire, or Wise transfer" do
+    %w[ach_transfer check transfer wire_transfer wise_transfer].each do |type|
       presenter = Hcb::TransactionPresenter.new({ "id" => "txn_5", "amount_cents" => 100, type => { "sender" => { "name" => "Jane D." } } })
 
       assert_equal "Jane D.", presenter.user_name
@@ -54,7 +62,7 @@ class Hcb::TransactionPresenterTest < ActiveSupport::TestCase
     json = presenter.as_json
 
     assert_equal %i[
-      id date settled_date memo amount direction tags user_name category_label
+      id date settled_date memo amount direction tags user_name code category_label
       recipient_name reason pending declined reversed missing_receipt lost_receipt
       status_label decline_reason return_reason
     ].sort, json.keys.sort

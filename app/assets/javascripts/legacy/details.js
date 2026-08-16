@@ -45,16 +45,26 @@ function commentHtml(c) {
   return `<div class="detail-comment"><strong>${author}:</strong>${adminHtml} ${escapeHtml(c.content)}${fileHtml}${dateHtml}</div>`;
 }
 
+// Outgoing and incoming disbursement -- the two halves of one HCB transfer
+// between organizations. See TransactionPresenter::CATEGORY_NAMES.
+const TRANSFER_CODES = ["500", "550"];
+
 // Whether the transaction's reason (see TransactionPresenter::REASON_PATHS) is
-// telling the reader anything its memo hasn't already. Most transfers are named
-// by HCB rather than by a person, and those names restate the memo: a received
-// transfer's memo is "Transfer from <org>" where the transfer's own name is
-// "Transfer from <org> to <org>". A row saying the same thing twice is worse
-// than no row -- while a grant arriving as "💰 Hackathon grant from Hack Club"
-// behind a memo of "Transfer from Hack Club HQ" is the whole point of the field.
+// telling the reader anything its memo hasn't already. A row saying the same
+// thing twice is worse than no row -- while a check whose memo is "Check to
+// Acme Co" and whose payment_for is "Venue deposit" is the whole point of the
+// field.
+//
+// Transfers are held to a looser test than everything else. HCB copies a
+// disbursement's stated purpose into both legs' memos, and then shortens the
+// receiving leg's to "Transfer from <org>" against a purpose of "Transfer from
+// <org> to <org>" -- so under the prefix rule below the reason was suppressed
+// on every disbursement ever, which read as Steelyard not having it. It does
+// have it; only an exact restatement is worth hiding.
 function reasonAddsToMemo(t) {
   if (!t.reason) return false;
   if (!t.memo) return true;
+  if (TRANSFER_CODES.includes(t.code)) return t.reason !== t.memo;
   return !t.reason.startsWith(t.memo) && !t.memo.startsWith(t.reason);
 }
 

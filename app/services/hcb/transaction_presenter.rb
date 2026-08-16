@@ -117,13 +117,18 @@ module Hcb
       @raw.dig("ach_transfer", "sender", "name") ||
         @raw.dig("check", "sender", "name") ||
         @raw.dig("transfer", "sender", "name") ||
+        @raw.dig("wire_transfer", "sender", "name") ||
         @raw.dig("wise_transfer", "sender", "name") ||
         @raw.dig("card_charge", "card", "user", "name") ||
         @raw.dig("check_deposit", "submitter", "name") ||
         ""
     end
+    # The bare HCB code ("500"), alongside the human #category_label built from
+    # it. Callers that need to *branch* on the type -- rather than show it to
+    # someone -- would otherwise have to parse the label's trailing "(500)".
+    def code = @raw["code"].to_s
+
     def category_label
-      code = @raw["code"].to_s
       return "" if code.blank?
 
       name = CATEGORY_NAMES.fetch(code) { code.tr("_-", "  ").squish.capitalize }
@@ -165,7 +170,7 @@ module Hcb
     def as_json(*)
       {
         id: id, date: date, settled_date: settled_date, memo: memo, amount: amount,
-        direction: direction, tags: tags, user_name: user_name, category_label: category_label,
+        direction: direction, tags: tags, user_name: user_name, code: code, category_label: category_label,
         recipient_name: recipient_name, reason: reason, pending: pending?, declined: declined?,
         reversed: reversed?, missing_receipt: missing_receipt?, lost_receipt: lost_receipt?,
         status_label: status_label, decline_reason: decline_reason, return_reason: return_reason
