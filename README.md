@@ -90,8 +90,11 @@ tokens). Note claude.ai reaches the server from Anthropic's egress range, so a c
 publicly reachable HTTPS host — `localhost` works with Claude Code only.
 
 Tools: `list_organizations`, `get_reconciliation_summary`, `list_transactions`, `get_transaction`,
-`list_matches`, `get_match`, `create_match`, `undo_match`. The last two need the member or manager
-role, and `undo_match` reverses anything `create_match` did. `get_match` is the one to reach for
+`list_matches`, `get_match`, `create_match`, `update_match`, `undo_match`. The last three need the
+member or manager role, and `undo_match` reverses anything `create_match` did. `update_match` edits
+a match in place -- partial, so a note can be added without restating the legs -- which is what to
+use on a match that's merely incomplete, since undoing and re-creating loses the thread of its
+history. `get_match` is the one to reach for
 before undoing somebody else's work: it carries the same change history the detail popup shows, so
 a match two people have already edited reads as a disagreement rather than a mistake.
 

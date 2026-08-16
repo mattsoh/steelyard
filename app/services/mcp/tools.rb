@@ -177,11 +177,44 @@ module Mcp
       ),
 
       Tool.new(
+        name: "update_match",
+        title: "Update match",
+        description: "Change a match that already exists: add or remove legs, or write a note explaining it. " \
+                     "Prefer this over undo_match plus create_match when the match is broadly right — filling in " \
+                     "the outgoing leg an unbalanced match is missing keeps one match with its history intact, " \
+                     "where undoing and re-creating leaves the original as an undone stub and loses the thread. " \
+                     "Only what you send changes: omit a field and it stays as it is, so a note can be added " \
+                     "without restating the legs. Sending a side REPLACES that whole side — to add one " \
+                     "transaction, send the ids the match already has plus the new one, from get_match. Sending " \
+                     "[] empties that side. Requires the member or manager role.",
+        input_schema: {
+          type: "object",
+          properties: {
+            organization_id: ORGANIZATION_ID,
+            match_id: { type: "integer", description: "Steelyard match id, from list_matches or create_match." },
+            incoming_ids: { type: "array", items: { type: "string" }, description: "The complete new set of money-in transaction ids. Omit to leave the incoming side untouched." },
+            outgoing_ids: { type: "array", items: { type: "string" }, description: "The complete new set of money-out transaction ids. Omit to leave the outgoing side untouched." },
+            note: { type: "string", description: "Replaces the existing note. Omit to leave it alone; send \"\" to clear it." }
+          },
+          required: [ "organization_id", "match_id" ],
+          additionalProperties: false
+        },
+        handler: ->(ops, args) {
+          ops.update_match(
+            args["organization_id"], args["match_id"],
+            incoming_ids: args["incoming_ids"],
+            outgoing_ids: args["outgoing_ids"],
+            note: args["note"]
+          )
+        }
+      ),
+
+      Tool.new(
         name: "undo_match",
         title: "Undo match",
-        description: "Undo a match, freeing its transactions to be matched again. Use it to correct a match — " \
-                     "including one somebody else made — by undoing it and creating the right one. Requires the " \
-                     "member or manager role.",
+        description: "Undo a match, freeing its transactions to be matched again. Use it when the match pairs the " \
+                     "wrong things altogether — if it's merely incomplete or mislabelled, update_match fixes it " \
+                     "in place and keeps the history. Requires the member or manager role.",
         input_schema: {
           type: "object",
           properties: {

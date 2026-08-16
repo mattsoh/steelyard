@@ -120,6 +120,48 @@ class McpTest < ActionDispatch::IntegrationTest
     end
   end
 
+  # The tool exists so an incomplete match can be finished rather than undone
+  # and rebuilt, so what matters is that the fields nobody sent survive it.
+  test "update_match changes only what the call mentioned" do
+    with_hcb("member") do
+      id = tool_payload(call_tool("create_match", {
+        "organization_id" => "org_1", "incoming_ids" => [ "txn_in" ], "outgoing_ids" => []
+      }))["id"]
+
+      noted = tool_payload(call_tool("update_match", {
+        "organization_id" => "org_1", "match_id" => id, "note" => "grant still pending"
+      }))
+      assert_equal "grant still pending", noted["note"]
+      assert_equal [ "txn_in" ], noted["incoming_ids"]
+      assert_equal false, noted["balanced"]
+
+      filled = tool_payload(call_tool("update_match", {
+        "organization_id" => "org_1", "match_id" => id, "outgoing_ids" => [ "txn_out" ]
+      }))
+      assert_equal true, filled["balanced"]
+      assert_equal "grant still pending", filled["note"]
+      # The edits are on the record, which is the reason to prefer this over
+      # undoing and re-creating.
+      assert_equal [ "created", "edited", "edited" ], filled["history"].map { |e| e["action"] }
+      assert_equal "Matt", filled["last_edited_by"]
+    end
+  end
+
+  test "a role that cannot match cannot edit one either" do
+    id = with_hcb("member") do
+      tool_payload(call_tool("create_match", {
+        "organization_id" => "org_1", "incoming_ids" => [ "txn_in" ], "outgoing_ids" => [ "txn_out" ]
+      }))["id"]
+    end
+
+    with_hcb("reader") do
+      reply = call_tool("update_match", { "organization_id" => "org_1", "match_id" => id, "note" => "no" })
+
+      assert_equal true, reply["result"]["isError"]
+      assert_match(/members and managers/, tool_payload(reply)["error"])
+    end
+  end
+
   # The question a model asks before touching somebody else's match: who made
   # this, and has anyone argued with it since?
   test "get_match answers with the change history behind one match" do
