@@ -270,6 +270,11 @@ module PublicApi
         discrepancy: money(match.discrepancy_cents),
         balanced: match.discrepancy_cents.zero?,
         undone: match.undone?,
+        # Somebody decided this one doesn't need looking at again -- usually a
+        # discrepancy that's a bug rather than missing money. It still counts
+        # in the summary's totals; hiding only takes it out of the matcher's
+        # lists by default.
+        hidden: match.hidden?,
         note: match.note,
         created_by: display_name(match.created_by),
         created_at: match.created_at.iso8601,

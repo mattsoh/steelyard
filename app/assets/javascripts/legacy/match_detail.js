@@ -35,6 +35,11 @@ let matchNoteError = null;
 // someone is in the middle of writing.
 let matchNoteDraft = "";
 
+// Hiding is one click with nothing to fill in, so all it needs is somewhere to
+// say the request is in flight -- the button is disabled meanwhile so a slow
+// save can't be sent twice.
+let matchHideBusy = false;
+
 const LOADING_MATCH_HTML = `<div class="empty-msg loading-msg"><span class="loading-spinner"></span>Loading match…</div>`;
 
 const ACTION_LABELS = {
@@ -140,6 +145,12 @@ function matchChangeHtml(c) {
   if (c.kind === "adjustment") {
     return `<li class="match-change">Adjustment: ${escapeHtml(c.memo)} — ${fmtDetail(c.amount)}</li>`;
   }
+  // A yes/no the server already rendered as words (see Matches::History) --
+  // quoting it the way a note's text is quoted would read as someone having
+  // typed "yes" into a field.
+  if (c.kind === "flag") {
+    return `<li class="match-change">${escapeHtml(c.label)}: ${escapeHtml(String(c.from))} → <strong>${escapeHtml(String(c.to))}</strong></li>`;
+  }
   if (c.kind === "amount") {
     return `<li class="match-change">${escapeHtml(c.label)}: ${fmtDetail(c.from || 0)} → <strong>${fmtDetail(c.to || 0)}</strong></li>`;
   }
@@ -227,6 +238,15 @@ function matchDetailBodyHtml(m) {
   const conflictHtml = m.conflict
     ? `<span class="conflict-badge" title="This match has legs on both sides of the current cutoff — one side is hidden, the other visible.">⚠ Spans cutoff</span>`
     : "";
+  // Hidden is about the matcher's lists, not about the match, so it's stated
+  // here rather than changing anything else the popup says. An undone match
+  // isn't in those lists at all, so there's nothing to hide it from.
+  const hiddenHtml = m.hidden
+    ? `<span class="hidden-badge" title="Out of the matcher's match lists until someone ticks “Show hidden”. Nothing else about the match changed.">🙈 Hidden${m.hidden_by_name ? ` by ${escapeHtml(m.hidden_by_name)}` : ""}</span>`
+    : "";
+  const hideButtonHtml = m.undone
+    ? ""
+    : `<button type="button" class="secondary match-hide-toggle" id="match-hide-toggle" ${matchHideBusy ? "disabled" : ""} title="${m.hidden ? "Put this match back in the matcher's lists" : "Take this match out of the matcher's lists — for a discrepancy that isn't money anyone has to find"}">${matchHideBusy ? "Saving…" : m.hidden ? "Unhide" : "Hide"}</button>`;
   const noteHtml = matchNoteHtml(m);
   const adjustmentsHtml = (m.adjustments || []).length
     ? `<div class="modal-field"><div class="field-label">Adjustments</div><div class="field-value">${m.adjustments
@@ -247,7 +267,7 @@ function matchDetailBodyHtml(m) {
 
   return `
     <div class="match-detail-top">
-      ${statusHtml}${conflictHtml}
+      <div class="match-detail-status">${statusHtml}${conflictHtml}${hiddenHtml}${hideButtonHtml}</div>
       ${matchProvenanceHtml(m)}
     </div>
     ${noteHtml}
@@ -344,6 +364,45 @@ async function saveMatchNote() {
   document.dispatchEvent(new CustomEvent("match:updated", { detail: matchDetailMatch }));
 }
 
+// Same PATCH the matcher's own Hide button sends, so a match hidden from here
+// is hidden for everyone, and the page behind the popup is told rather than
+// left listing it until the next reload.
+async function toggleMatchHidden() {
+  if (matchHideBusy || !matchDetailMatch) return;
+  const id = matchDetailId;
+  const hidden = !matchDetailMatch.hidden;
+  matchHideBusy = true;
+  renderMatchDetail(matchDetailMatch);
+
+  let saved;
+  try {
+    const res = await fetch(`${MATCH_API_BASE}/api/matches/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ hidden: hidden }),
+    });
+    if (await handledReauthRequired(res)) return;
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `Could not ${hidden ? "hide" : "unhide"} this match.`);
+    }
+    saved = await res.json();
+  } catch (e) {
+    matchHideBusy = false;
+    if (matchDetailId !== id) return;
+    alert(e.message);
+    renderMatchDetail(matchDetailMatch);
+    return;
+  }
+
+  matchHideBusy = false;
+  if (matchDetailId !== id) return;
+
+  matchDetailMatch = { ...matchDetailMatch, ...saved };
+  renderMatchDetail(matchDetailMatch);
+  document.dispatchEvent(new CustomEvent("match:updated", { detail: matchDetailMatch }));
+}
+
 function wireNoteEditor(body) {
   const edit = body.querySelector("#match-note-edit");
   if (edit) edit.addEventListener("click", startNoteEdit);
@@ -369,6 +428,9 @@ function renderMatchDetail(m) {
   const body = document.getElementById("match-modal-body");
   body.innerHTML = matchDetailBodyHtml(m);
   wireNoteEditor(body);
+
+  const hideToggle = body.querySelector("#match-hide-toggle");
+  if (hideToggle) hideToggle.addEventListener("click", toggleMatchHidden);
 
   // The transaction modal opens over this one, from a leg or from a leg named
   // in the history -- both are already resolved in the response, so it doesn't

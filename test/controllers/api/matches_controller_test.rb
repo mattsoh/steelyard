@@ -285,6 +285,77 @@ class Api::MatchesControllerTest < ActionController::TestCase
     end
   end
 
+  # Hiding is how a discrepancy that's an engineering bug rather than missing
+  # money stops sitting at the top of the unbalanced list. It must not touch
+  # what the match pairs or what it's off by -- the frontend still counts it,
+  # and an unhide has to put back exactly what was there.
+  test "hiding and unhiding a match leaves its legs and discrepancy alone" do
+    Hcb::Client.stub :new, @fake_client do
+      stub_membership("member") do
+        post :create, params: { organization_id: "org_1", incoming_ids: [ "txn_in" ], outgoing_ids: [] }
+        match_id = JSON.parse(response.body)["id"]
+
+        patch :update, params: { organization_id: "org_1", id: match_id, hidden: true }
+        assert_response :success
+        body = JSON.parse(response.body)
+        assert_equal true, body["hidden"]
+        assert_equal [ "txn_in" ], body["incoming_ids"]
+        assert_equal 100.0, body["discrepancy"]
+        hidden_match = Match.find(match_id)
+        assert hidden_match.hidden?
+        assert_equal @user.id, hidden_match.hidden_by_user_id
+
+        # The change log says who took it out of the list, in words rather than
+        # as a timestamp appearing on the match from nowhere.
+        change = body["history"].last["changes"].sole
+        assert_equal "flag", change["kind"]
+        assert_equal "no", change["from"]
+        assert_equal "yes", change["to"]
+
+        patch :update, params: { organization_id: "org_1", id: match_id, hidden: false }
+        assert_response :success
+        body = JSON.parse(response.body)
+        assert_equal false, body["hidden"]
+        assert_nil body["hidden_by_name"]
+        assert_equal [ "txn_in" ], body["incoming_ids"]
+
+        match = Match.find(match_id)
+        assert_not match.hidden?
+        assert_nil match.hidden_by_user_id
+        assert_equal 10_000, match.discrepancy_cents
+      end
+    end
+  end
+
+  test "an update that does not mention hidden leaves it as it stands" do
+    Hcb::Client.stub :new, @fake_client do
+      stub_membership("member") do
+        post :create, params: { organization_id: "org_1", incoming_ids: [ "txn_in" ], outgoing_ids: [] }
+        match_id = JSON.parse(response.body)["id"]
+
+        patch :update, params: { organization_id: "org_1", id: match_id, hidden: true }
+        patch :update, params: { organization_id: "org_1", id: match_id, note: "Known HCB duplicate" }
+        assert_response :success
+
+        body = JSON.parse(response.body)
+        assert_equal true, body["hidden"]
+        assert_equal "Known HCB duplicate", body["note"]
+      end
+    end
+  end
+
+  test "a reader cannot hide a match" do
+    match = Match.create!(hcb_organization_id: "org_1", discrepancy_cents: 500, created_by: @user)
+
+    Hcb::Client.stub :new, @fake_client do
+      stub_membership("reader") do
+        patch :update, params: { organization_id: "org_1", id: match.id, hidden: true }
+      end
+    end
+    assert_response :forbidden
+    assert_not match.reload.hidden?
+  end
+
   test "a reader cannot write a note" do
     match = Match.create!(hcb_organization_id: "org_1", discrepancy_cents: 0, created_by: @user)
 

@@ -738,9 +738,34 @@ function rangeSelection(order, selected, anchorId, id) {
 // where it can be edited or undone. Returns whether the click belonged to a
 // match at all: a matched row is never selectable, even in the corner where the
 // match's own row hasn't been rendered yet and there's nothing to scroll to.
+// Whatever it takes for the match's row to be on the page, and showing the
+// transaction someone clicked: the row expanded, and its section showing
+// hidden matches if that's where this one went. Without this the click on a
+// greyed-out matched row would land on nothing, or on a collapsed summary that
+// doesn't name the transaction it came from.
+function revealMatchRow(matchId) {
+  let changed = false;
+  if (!expandedMatchIds.has(matchId)) {
+    expandedMatchIds.add(matchId);
+    changed = true;
+  }
+
+  const m = matches.find((x) => x.id === matchId);
+  if (m && m.hidden) {
+    const toggle = document.getElementById(m.discrepancy === 0 ? "show-hidden-balanced" : "show-hidden-unbalanced");
+    if (!toggle.checked) {
+      toggle.checked = true;
+      changed = true;
+    }
+  }
+
+  if (changed) renderMatches();
+}
+
 function jumpToMatchForTransaction(transactionId) {
   const matchId = matchIdForTransaction(transactionId);
   if (matchId === null) return false;
+  revealMatchRow(matchId);
   const row = document.getElementById(`match-row-${matchId}`);
   if (!row) return true;
 
@@ -1093,49 +1118,139 @@ function conflictBadgeHtml(m) {
   return `<div class="conflict-badge" title="This match has legs on both sides of the current cutoff — one side is hidden, the other visible.">⚠ Spans cutoff</div>`;
 }
 
+// Which match rows are open. Rows are collapsed to a line a side by default:
+// a match pairing a dozen transactions is otherwise tall enough to fill the
+// whole section, and what someone scanning the list wants first is which match
+// it is, not every leg in it. Held outside the DOM because these lists are
+// re-rendered on every click in the panels above -- a row someone opened has
+// to still be open afterwards.
+const expandedMatchIds = new Set();
+
+function toggleMatchRow(id) {
+  if (expandedMatchIds.has(id)) expandedMatchIds.delete(id);
+  else expandedMatchIds.add(id);
+  renderMatches();
+}
+
+// The collapsed form of one side: the leg itself when there's only one (which
+// is most matches, and reads better than "1 incoming"), otherwise how many
+// there are and what they come to.
+function matchSideSummaryHtml(txns, noun, emptyMsg) {
+  if (!txns.length) return `<span class="side-empty">${emptyMsg}</span>`;
+  if (txns.length === 1) {
+    const t = txns[0];
+    return `<div class="match-side-summary-line">${t.date} — ${escapeHtml(t.memo)} — <strong>${fmt(t.amount)}</strong></div>`;
+  }
+  const total = txns.reduce((s, t) => s + t.amount, 0);
+  return `<div class="match-side-summary-line">${txns.length} ${noun} — <strong>${fmt(total)}</strong></div>`;
+}
+
+function matchSideLegsHtml(txns, emptyMsg, { bold }) {
+  if (!txns.length) return `<span class="side-empty">${emptyMsg}</span>`;
+  return txns
+    .map((t) => {
+      const amount = bold ? `<strong>${fmt(t.amount)}</strong>` : fmt(t.amount);
+      return `<div>${t.date} — ${escapeHtml(t.memo)}${hcbCodeInlineHtml(t)}${infoIconHtml(t)}${HCBLinkHtml(t)} — ${amount}</div>`;
+    })
+    .join("");
+}
+
+function hiddenBadgeHtml(m) {
+  if (!m.hidden) return "";
+  const who = m.hidden_by_name ? ` by ${escapeHtml(m.hidden_by_name)}` : "";
+  return `<div class="hidden-badge" title="Hidden${who} — it stays matched and keeps its discrepancy, it just isn't listed here unless “Show hidden” is ticked">🙈 Hidden</div>`;
+}
+
 function matchRowHtml(m) {
   const incoming = m.incoming_ids.map((id) => byId.get(id)).filter(Boolean);
   const outgoing = m.outgoing_ids.map((id) => byId.get(id)).filter(Boolean);
   const discClass = m.discrepancy === 0 ? "discrepancy-ok" : "discrepancy-bad";
   const discText = m.discrepancy === 0 ? "balanced" : `off by ${fmt(m.discrepancy)}`;
-  const sideIn = incoming.length
-    ? incoming.map((t) => `<div>${t.date} — ${escapeHtml(t.memo)}${hcbCodeInlineHtml(t)}${infoIconHtml(t)}${HCBLinkHtml(t)} — <strong>${fmt(t.amount)}</strong></div>`).join("")
-    : `<span class="side-empty">No incoming</span>`;
-  const sideOut = outgoing.length
-    ? outgoing.map((t) => `<div>${t.date} — ${escapeHtml(t.memo)}${hcbCodeInlineHtml(t)}${infoIconHtml(t)}${HCBLinkHtml(t)} — ${fmt(t.amount)}</div>`).join("")
-    : `<span class="side-empty">No outgoing</span>`;
+  const open = expandedMatchIds.has(m.id);
+  const sideIn = open ? matchSideLegsHtml(incoming, "No incoming", { bold: true }) : matchSideSummaryHtml(incoming, "incoming", "No incoming");
+  const sideOut = open ? matchSideLegsHtml(outgoing, "No outgoing", { bold: false }) : matchSideSummaryHtml(outgoing, "outgoing", "No outgoing");
+  // Collapsed, the summary is inert text, so the whole of it is part of the
+  // control that opens the row. Expanded it isn't: the legs carry their own
+  // info buttons and HCB links, and a click on one of those mustn't also
+  // collapse the row out from under it.
+  const sideToggle = open ? "" : ` data-toggle="${m.id}"`;
+  const toggleLabel = open ? "Collapse this match" : "Show the transactions in this match";
   // Editing pulls a match out of `matches` (and into the tray) entirely, so
   // this row is never rendered for the match currently being edited -- the
   // disabled state here only guards *other* rows against starting a second
   // edit (or being undone) while one is already in progress. View is exempt:
-  // reading a match changes nothing, so there's nothing to guard.
+  // reading a match changes nothing, so there's nothing to guard. So is Hide:
+  // it changes what's listed, not what anything pairs.
   const otherRowDisabled = editingMatchId !== null ? "disabled" : "";
   // Addressable so a click on a greyed-out matched row in the panels above can
   // scroll straight to it -- see jumpToMatchForTransaction.
-  return `<div class="match-row${m.conflict ? " match-row-conflict" : ""}" id="match-row-${m.id}">
-    <div class="side-in">${sideIn}</div>
-    <div class="side-out">${sideOut}</div>
-    <div class="${discClass}">${discText}${conflictBadgeHtml(m)}${matchMetaHtml(m)}</div>
+  return `<div class="match-row${m.conflict ? " match-row-conflict" : ""}${m.hidden ? " match-row-hidden" : ""}" id="match-row-${m.id}">
+    <button type="button" class="match-toggle" data-toggle="${m.id}" aria-expanded="${open}" aria-label="${toggleLabel}" title="${toggleLabel}">${open ? "▾" : "▸"}</button>
+    <div class="side-in"${sideToggle}>${sideIn}</div>
+    <div class="side-out"${sideToggle}>${sideOut}</div>
+    <div class="${discClass}">${discText}${conflictBadgeHtml(m)}${hiddenBadgeHtml(m)}${matchMetaHtml(m)}</div>
     <div class="match-row-actions">
       <button class="secondary" data-view="${m.id}" title="Open this match — full details, and who changed what">View</button>
       <button class="secondary" data-edit="${m.id}" ${otherRowDisabled}>Edit</button>
+      <button class="secondary" data-hide="${m.id}" title="${m.hidden ? "Put this match back in the list" : "Take this match out of the list — for a discrepancy that isn't money anyone has to find"}">${m.hidden ? "Unhide" : "Hide"}</button>
       <button class="danger" data-delete="${m.id}" ${otherRowDisabled}>Undo</button>
     </div>
   </div>`;
 }
 
-function renderMatchGroup(group, listId, countId, emptyMsg) {
-  document.getElementById(countId).textContent = group.length;
-  const list = document.getElementById(listId);
-
-  if (group.length === 0) {
-    list.innerHTML = `<div class="empty-msg">${emptyMsg}</div>`;
+// Hiding is saved on the match, not in this browser: whoever decided a
+// discrepancy isn't worth chasing decided it for everyone reconciling this
+// organization, the same way matching does.
+async function setMatchHidden(id, hidden) {
+  const res = await fetch(`${API_BASE}/api/matches/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ hidden: hidden }),
+  });
+  if (await handledReauthRequired(res)) return;
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    alert(`Could not ${hidden ? "hide" : "unhide"} this match: ${err.error || "please try again."}`);
     return;
   }
 
-  const sorted = [...group].sort(byRecentlyTouched);
+  const saved = await res.json();
+  const i = matches.findIndex((m) => m.id === saved.id);
+  if (i !== -1) matches[i] = { ...matches[i], ...saved };
+  render();
+}
+
+function renderMatchGroup(group, listId, countId, emptyMsg, { showHidden, hiddenCountId, toggleId }) {
+  const hidden = group.filter((m) => m.hidden);
+  const shown = showHidden ? group : group.filter((m) => !m.hidden);
+
+  // The section's own count is what's on screen; the hidden ones are counted
+  // beside the checkbox that brings them back, so neither number is a
+  // surprise. The checkbox itself stays out of the way until there is
+  // something behind it -- or until it's ticked, since it has to be possible
+  // to untick.
+  document.getElementById(countId).textContent = shown.length;
+  document.getElementById(hiddenCountId).textContent = hidden.length;
+  document.getElementById(toggleId).closest(".hidden-toggle").classList.toggle("hidden", hidden.length === 0 && !showHidden);
+
+  const list = document.getElementById(listId);
+
+  if (shown.length === 0) {
+    const only = hidden.length ? ` ${hidden.length} hidden match${hidden.length === 1 ? "" : "es"} not shown.` : "";
+    list.innerHTML = `<div class="empty-msg">${emptyMsg}${only}</div>`;
+    return;
+  }
+
+  const sorted = [...shown].sort(byRecentlyTouched);
   list.innerHTML = sorted.map(matchRowHtml).join("");
 
+  list.querySelectorAll("[data-toggle]").forEach((el) => {
+    el.addEventListener("click", () => toggleMatchRow(Number(el.dataset.toggle)));
+  });
+  list.querySelectorAll("[data-hide]").forEach((el) => {
+    const id = Number(el.dataset.hide);
+    el.addEventListener("click", () => setMatchHidden(id, !matches.some((m) => m.id === id && m.hidden)));
+  });
   list.querySelectorAll("[data-view]").forEach((el) => {
     el.addEventListener("click", () => showMatchModal(el.dataset.view));
   });
@@ -1164,8 +1279,16 @@ function renderMatches() {
     return;
   }
 
-  renderMatchGroup(unbalancedMatches(), "matches-unbalanced-list", "matches-unbalanced-count", "No discrepancies 🎉");
-  renderMatchGroup(balancedMatches(), "matches-balanced-list", "matches-balanced-count", "No balanced matches yet.");
+  renderMatchGroup(unbalancedMatches(), "matches-unbalanced-list", "matches-unbalanced-count", "No discrepancies 🎉", {
+    showHidden: document.getElementById("show-hidden-unbalanced").checked,
+    hiddenCountId: "matches-unbalanced-hidden-count",
+    toggleId: "show-hidden-unbalanced",
+  });
+  renderMatchGroup(balancedMatches(), "matches-balanced-list", "matches-balanced-count", "No balanced matches yet.", {
+    showHidden: document.getElementById("show-hidden-balanced").checked,
+    hiddenCountId: "matches-balanced-hidden-count",
+    toggleId: "show-hidden-balanced",
+  });
 }
 
 // The two buckets the page splits matches into, shared by the sections that
@@ -1187,6 +1310,10 @@ const MATCH_CSV_COLUMNS = [
   ["Match ID", (m) => m.id],
   ["Discrepancy", (m) => m.discrepancy],
   ["Spans cutoff", (m) => (m.conflict ? "yes" : "")],
+  // Exports carry every match in the bucket, hidden ones included -- a file
+  // that quietly dropped them would disagree with the API and with anyone
+  // else's export. The column is how the reader tells which is which.
+  ["Hidden", (m) => (m.hidden ? "yes" : "")],
   ["Matched by", (m) => m.created_by_name],
   ["Matched at", (m) => m.created_at],
   // The file is ordered by when each match was last touched, so it carries the
@@ -1404,6 +1531,10 @@ document.getElementById("btn-confirm").addEventListener("click", confirmMatch);
 document.getElementById("tray-note").addEventListener("input", saveTraySnapshot);
 document.getElementById("btn-cancel").addEventListener("click", cancelMatch);
 document.getElementById("btn-refresh-matches").addEventListener("click", refreshMatches);
+// Only the match sections redraw: which hidden matches are on screen has
+// nothing to do with the transaction panels above.
+document.getElementById("show-hidden-unbalanced").addEventListener("change", renderMatches);
+document.getElementById("show-hidden-balanced").addEventListener("change", renderMatches);
 document.getElementById("btn-refresh-transactions").addEventListener("click", () => refreshTransactions({ announce: true }));
 document.getElementById("btn-full-reload").addEventListener("click", fullReloadTransactionsAndRender);
 document.getElementById("btn-download-unmatched-in").addEventListener("click", () => downloadUnmatchedCsv("in"));

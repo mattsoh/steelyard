@@ -25,7 +25,11 @@ module Matches
     # the entry's own headline (undone_at, undone_by_user_id).
     FIELDS = {
       "note" => { label: "Note", kind: "text" },
-      "discrepancy_cents" => { label: "Discrepancy", kind: "amount" }
+      "discrepancy_cents" => { label: "Discrepancy", kind: "amount" },
+      # When, exactly, somebody hid it is on the match itself; what the history
+      # is for here is that they did, so it reads as a yes/no rather than as a
+      # timestamp appearing out of nowhere.
+      "hidden_at" => { label: "Hidden from the match lists", kind: "flag" }
     }.freeze
 
     CHILD_TYPES = %w[MatchTransaction MatchAdjustment].freeze
@@ -222,9 +226,10 @@ module Matches
     end
 
     def display(kind, value)
-      return value if kind != "amount"
+      return value.to_i / 100.0 if kind == "amount"
+      return value.present? ? "yes" : "no" if kind == "flag"
 
-      value.to_i / 100.0
+      value
     end
   end
 end

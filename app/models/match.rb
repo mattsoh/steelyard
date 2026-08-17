@@ -3,6 +3,7 @@ class Match < ApplicationRecord
 
   belongs_to :created_by, class_name: "User", foreign_key: :created_by_user_id, inverse_of: :created_matches
   belongs_to :undone_by, class_name: "User", foreign_key: :undone_by_user_id, inverse_of: :undone_matches, optional: true
+  belongs_to :hidden_by, class_name: "User", foreign_key: :hidden_by_user_id, inverse_of: :hidden_matches, optional: true
 
   has_many :match_transactions, inverse_of: :match, dependent: :destroy
   has_many :adjustments, class_name: "MatchAdjustment", inverse_of: :match, dependent: :destroy
@@ -10,9 +11,16 @@ class Match < ApplicationRecord
   validates :hcb_organization_id, presence: true
 
   scope :active, -> { where(undone_at: nil) }
+  scope :visible, -> { where(hidden_at: nil) }
   scope :for_organization, ->(org_id) { where(hcb_organization_id: org_id) }
 
   def undone? = undone_at.present?
+
+  # Hidden is presentation, not state: the match still pairs what it pairs and
+  # still carries its discrepancy, it just doesn't sit in the matcher's lists
+  # unless someone asks to see the hidden ones. Every API that lists matches
+  # still returns it, flagged.
+  def hidden? = hidden_at.present?
 
   # Filters in Ruby rather than `match_transactions.active.incoming.pluck`,
   # which would issue a fresh query per call regardless of `includes`/prior

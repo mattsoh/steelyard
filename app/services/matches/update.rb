@@ -7,12 +7,13 @@ module Matches
     # note on its own -- the person writing one is not re-stating which
     # transactions the match pairs, and reading their silence as "no legs"
     # would empty the match.
-    def initialize(match:, user:, incoming_ids: nil, outgoing_ids: nil, note: nil, transactions_by_id: {})
+    def initialize(match:, user:, incoming_ids: nil, outgoing_ids: nil, note: nil, hidden: nil, transactions_by_id: {})
       @match = match
       @user = user
       @incoming_ids = incoming_ids
       @outgoing_ids = outgoing_ids
       @note = note
+      @hidden = hidden
       @transactions_by_id = transactions_by_id
     end
 
@@ -48,6 +49,7 @@ module Matches
         # is still the right answer, and re-deriving it here from a lookup the
         # caller never made would write a zero over it.
         attributes[:discrepancy_cents] = discrepancy_cents(incoming, outgoing) if replacing_legs?
+        attributes.merge!(hidden_attributes) unless @hidden.nil?
         @match.update!(attributes) if attributes.any?
       end
 
@@ -57,6 +59,18 @@ module Matches
     end
 
     private
+
+    # Who hid it is kept alongside when, so the lists can say whose judgement
+    # this was; unhiding clears both rather than leaving a name attached to a
+    # match nobody is hiding any more.
+    def hidden_attributes
+      return { hidden_at: nil, hidden_by_user_id: nil } unless @hidden
+      # Already hidden: leave the original decision (and its timestamp) alone
+      # rather than restamping it with whoever hid it a second time.
+      return {} if @match.hidden?
+
+      { hidden_at: Time.current, hidden_by_user_id: @user&.id }
+    end
 
     # Both sides are rewritten whenever either was given, so a caller that
     # sends only one side keeps the other exactly as it stands.

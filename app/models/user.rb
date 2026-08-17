@@ -4,6 +4,7 @@ class User < ApplicationRecord
   has_many :api_tokens, dependent: :destroy
   has_many :created_matches, class_name: "Match", foreign_key: :created_by_user_id, inverse_of: :created_by
   has_many :undone_matches, class_name: "Match", foreign_key: :undone_by_user_id, inverse_of: :undone_by
+  has_many :hidden_matches, class_name: "Match", foreign_key: :hidden_by_user_id, inverse_of: :hidden_by
 
   validates :hcb_user_id, presence: true, uniqueness: true
 

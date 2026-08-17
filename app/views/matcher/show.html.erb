@@ -193,6 +193,13 @@
 <section id="matches-section-unbalanced">
   <div class="panel-header">
     <h2>Unbalanced matches (<span id="matches-unbalanced-count">0</span>)</h2>
+    <%# Hidden matches are still matched and still carry their discrepancy --
+        somebody decided this one isn't money anyone has to find (an
+        engineering bug, most often), so it's out of the list until asked for. %>
+    <label class="matched-toggle hidden-toggle hidden" for="show-hidden-unbalanced" title="Also list unbalanced matches somebody has hidden. Hiding changes nothing about a match except whether it's listed here.">
+      <input type="checkbox" id="show-hidden-unbalanced">
+      Show hidden (<span id="matches-unbalanced-hidden-count">0</span>)
+    </label>
     <button type="button" id="btn-refresh-matches" class="secondary" title="Reload matches without reloading the whole page — useful when someone else is matching at the same time">↻ Refresh matches</button>
   </div>
   <div id="matches-unbalanced-list"></div>
@@ -201,6 +208,10 @@
 <section id="matches-section-balanced">
   <div class="panel-header">
     <h2>Balanced matches (<span id="matches-balanced-count">0</span>)</h2>
+    <label class="matched-toggle hidden-toggle hidden" for="show-hidden-balanced" title="Also list balanced matches somebody has hidden.">
+      <input type="checkbox" id="show-hidden-balanced">
+      Show hidden (<span id="matches-balanced-hidden-count">0</span>)
+    </label>
   </div>
   <div id="matches-balanced-list"></div>
 </section>

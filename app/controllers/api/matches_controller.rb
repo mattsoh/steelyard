@@ -6,7 +6,7 @@ class Api::MatchesController < ApplicationController
   def index
     ledger = OrganizationLedger.new(hcb_client, organization_id)
     matches = Match.active.for_organization(organization_id)
-      .includes(:created_by, :match_transactions, :adjustments).order(:id)
+      .includes(:created_by, :hidden_by, :match_transactions, :adjustments).order(:id)
 
     # An HCB transaction can change value after it was matched (see
     # Matches::Resync), so the stored discrepancy -- and the balanced/unbalanced
@@ -31,7 +31,7 @@ class Api::MatchesController < ApplicationController
   # match someone undid should explain that rather than 404.
   def show
     match = Match.for_organization(organization_id)
-      .includes(:created_by, :undone_by, :match_transactions, :adjustments)
+      .includes(:created_by, :undone_by, :hidden_by, :match_transactions, :adjustments)
       .find_by(id: params[:id])
     return render json: { error: "Match not found." }, status: :not_found unless match
 
@@ -89,6 +89,7 @@ class Api::MatchesController < ApplicationController
     incoming_ids = params.key?(:incoming_ids) ? Array(params[:incoming_ids]).map(&:to_s) : nil
     outgoing_ids = params.key?(:outgoing_ids) ? Array(params[:outgoing_ids]).map(&:to_s) : nil
     note = params.key?(:note) ? params[:note].to_s : nil
+    hidden = params.key?(:hidden) ? ActiveModel::Type::Boolean.new.cast(params[:hidden]) : nil
 
     ledger = OrganizationLedger.new(hcb_client, organization_id)
     # Nothing to resolve for a note-only save. Otherwise it's every leg the
@@ -107,6 +108,7 @@ class Api::MatchesController < ApplicationController
       incoming_ids: incoming_ids,
       outgoing_ids: outgoing_ids,
       note: note,
+      hidden: hidden,
       transactions_by_id: by_id
     ).call
 
@@ -149,6 +151,12 @@ class Api::MatchesController < ApplicationController
       created_at: m.created_at.iso8601,
       conflict: ledger.classify(incoming_ids + outgoing_ids) == :overlapping,
       undone: m.undone?,
+      # Listed either way -- the frontend is what decides whether hidden
+      # matches are on screen, and it can only offer to show them if it was
+      # told they exist.
+      hidden: m.hidden?,
+      hidden_at: m.hidden_at&.iso8601,
+      hidden_by_name: m.hidden_by && display_name(m.hidden_by),
       **last_edit_fields(history)
     }
   end

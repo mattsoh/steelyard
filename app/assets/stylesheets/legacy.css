@@ -517,11 +517,27 @@ button.danger {
 
 #matches-section-balanced { margin-bottom: 30px; }
 
+/* Heading, the "show hidden" toggle and the refresh button on one line: the
+   panel default stacks its children, which with three of them leaves the
+   section header taller than the rows underneath it. */
+#matches-section-unbalanced .panel-header,
+#matches-section-balanced .panel-header {
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+}
+
+#matches-section-unbalanced .panel-header .hidden-toggle,
+#matches-section-balanced .panel-header .hidden-toggle {
+  margin-left: auto;
+  align-self: center;
+}
+
 #matches-unbalanced-list, #matches-balanced-list { max-height: 40vh; overflow-y: auto; }
 
 .match-row {
   display: grid;
-  grid-template-columns: 1fr 1fr 90px 195px;
+  grid-template-columns: 20px 1fr 1fr 90px 250px;
   gap: 10px;
   padding: 10px 14px;
   border-bottom: 1px solid #eef0f2;
@@ -547,6 +563,49 @@ button.danger {
 .match-row .side-in { color: var(--in-color); }
 .match-row .side-out { color: var(--out-color); }
 .match-row .side-out div { margin-bottom: 2px; }
+
+/* The caret that opens a row. Sized as a plain glyph rather than inheriting
+   the button padding every other control on the row has -- it sits in a 20px
+   column beside the two sides, not among the actions. */
+.match-toggle {
+  align-self: start;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #656d76;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+/* Collapsed, a side is one line: the whole point is that a match with a dozen
+   legs takes the same room as one with two. Long memos are cut off rather than
+   wrapped -- expanding the row is what shows them in full. */
+.match-side-summary-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A collapsed side is part of the control that opens the row (see
+   matchRowHtml); expanded, its legs have their own buttons and links. */
+.match-row .side-in[data-toggle], .match-row .side-out[data-toggle] { cursor: pointer; }
+
+/* Only ever on screen when someone ticked "Show hidden", so it says which rows
+   are the hidden ones without hiding them a second time. */
+.match-row-hidden { background: #f6f8fa; color: #656d76; }
+.match-row-hidden .side-in, .match-row-hidden .side-out { opacity: 0.65; }
+
+.hidden-badge {
+  display: inline-block;
+  margin-top: 4px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: #656d76;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
 
 .discrepancy-ok { color: var(--green); font-weight: 600; }
 .discrepancy-bad { color: var(--red); font-weight: 700; }
@@ -739,6 +798,17 @@ button.danger {
   margin-bottom: 14px;
   border-bottom: 1px solid var(--border);
 }
+
+/* Status, badges and the hide button on one line, with the provenance line
+   free to wrap onto its own beneath them. */
+.match-detail-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.match-hide-toggle { padding: 3px 9px; font-size: 11px; }
 
 .match-status { font-size: 14px; }
 
