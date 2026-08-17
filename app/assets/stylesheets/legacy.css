@@ -537,7 +537,7 @@ button.danger {
 
 .match-row {
   display: grid;
-  grid-template-columns: 20px 1fr 1fr 90px 250px;
+  grid-template-columns: 22px 1fr 1fr 90px 250px;
   gap: 10px;
   padding: 10px 14px;
   border-bottom: 1px solid #eef0f2;
@@ -564,18 +564,30 @@ button.danger {
 .match-row .side-out { color: var(--out-color); }
 .match-row .side-out div { margin-bottom: 2px; }
 
-/* The caret that opens a row. Sized as a plain glyph rather than inheriting
-   the button padding every other control on the row has -- it sits in a 20px
-   column beside the two sides, not among the actions. */
+/* The caret that opens a row: a square hit area in the row's first column,
+   not the padded pill every other button on the row is. Centred on the row
+   while it's one line high; once it's open the row is as tall as its legs, so
+   the caret lines up with the first of them instead of floating halfway down. */
 .match-toggle {
-  align-self: start;
+  align-self: center;
+  justify-self: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
   padding: 0;
   border: 0;
+  border-radius: 4px;
   background: none;
   color: #656d76;
-  font-size: 11px;
-  line-height: 1.6;
+  font-size: 13px;
+  line-height: 1;
 }
+
+.match-toggle:hover { background: #eef0f2; color: #1f2328; }
+
+.match-row-open .match-toggle { align-self: start; }
 
 /* Collapsed, a side is one line: the whole point is that a match with a dozen
    legs takes the same room as one with two. Long memos are cut off rather than
@@ -1234,6 +1246,12 @@ tr.zero-point { background: #fff8c5; }
     grid-template-columns: 1fr;
     gap: 4px;
   }
+
+  /* Stacked, the caret is a row of its own rather than a column beside the
+     sides -- so it goes to the left edge, and the spacer that reserves its
+     column on wide screens has nothing to reserve. */
+  .match-row .match-toggle { justify-self: start; }
+  .match-row .match-toggle-spacer { display: none; }
 
   .match-row-actions {
     margin-top: 6px;

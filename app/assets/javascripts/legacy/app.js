@@ -1128,13 +1128,21 @@ function conflictBadgeHtml(m) {
   return `<div class="conflict-badge" title="This match has legs on both sides of the current cutoff — one side is hidden, the other visible.">⚠ Spans cutoff</div>`;
 }
 
-// Which match rows are open. Rows are collapsed to a line a side by default:
-// a match pairing a dozen transactions is otherwise tall enough to fill the
-// whole section, and what someone scanning the list wants first is which match
-// it is, not every leg in it. Held outside the DOM because these lists are
-// re-rendered on every click in the panels above -- a row someone opened has
-// to still be open afterwards.
+// Which match rows are open. Rows with more than one leg on a side are
+// collapsed to a line a side by default: a match pairing a dozen transactions
+// is otherwise tall enough to fill the whole section, and what someone
+// scanning the list wants first is which match it is, not every leg in it.
+// Held outside the DOM because these lists are re-rendered on every click in
+// the panels above -- a row someone opened has to still be open afterwards.
 const expandedMatchIds = new Set();
+
+// One leg a side is already as short as the row gets, and opening it would
+// only add the leg's own buttons -- so there's nothing to open, and no caret
+// offering to. Most matches are one-to-one, which is exactly the case where a
+// control that does nothing visible would be most confusing.
+function matchIsCollapsible(incoming, outgoing) {
+  return incoming.length > 1 || outgoing.length > 1;
+}
 
 function toggleMatchRow(id) {
   if (expandedMatchIds.has(id)) expandedMatchIds.delete(id);
@@ -1176,7 +1184,8 @@ function matchRowHtml(m) {
   const outgoing = m.outgoing_ids.map((id) => byId.get(id)).filter(Boolean);
   const discClass = m.discrepancy === 0 ? "discrepancy-ok" : "discrepancy-bad";
   const discText = m.discrepancy === 0 ? "balanced" : `off by ${fmt(m.discrepancy)}`;
-  const open = expandedMatchIds.has(m.id);
+  const collapsible = matchIsCollapsible(incoming, outgoing);
+  const open = !collapsible || expandedMatchIds.has(m.id);
   const sideIn = open ? matchSideLegsHtml(incoming, "No incoming", { bold: true }) : matchSideSummaryHtml(incoming, "incoming", "No incoming");
   const sideOut = open ? matchSideLegsHtml(outgoing, "No outgoing", { bold: false }) : matchSideSummaryHtml(outgoing, "outgoing", "No outgoing");
   // Collapsed, the summary is inert text, so the whole of it is part of the
@@ -1184,7 +1193,12 @@ function matchRowHtml(m) {
   // info buttons and HCB links, and a click on one of those mustn't also
   // collapse the row out from under it.
   const sideToggle = open ? "" : ` data-toggle="${m.id}"`;
-  const toggleLabel = open ? "Collapse this match" : "Show the transactions in this match";
+  const toggleLabel = open ? "Collapse this match" : `Show all ${incoming.length + outgoing.length} transactions in this match`;
+  // The column the caret sits in is there on every row, caret or not, so the
+  // two sides start in the same place whether or not a row can be opened.
+  const toggleHtml = collapsible
+    ? `<button type="button" class="match-toggle" data-toggle="${m.id}" aria-expanded="${open}" aria-label="${toggleLabel}" title="${toggleLabel}">${open ? "▾" : "▸"}</button>`
+    : `<span class="match-toggle-spacer"></span>`;
   // Editing pulls a match out of `matches` (and into the tray) entirely, so
   // this row is never rendered for the match currently being edited -- the
   // disabled state here only guards *other* rows against starting a second
@@ -1194,8 +1208,8 @@ function matchRowHtml(m) {
   const otherRowDisabled = editingMatchId !== null ? "disabled" : "";
   // Addressable so a click on a greyed-out matched row in the panels above can
   // scroll straight to it -- see jumpToMatchForTransaction.
-  return `<div class="match-row${m.conflict ? " match-row-conflict" : ""}${m.hidden ? " match-row-hidden" : ""}" id="match-row-${m.id}">
-    <button type="button" class="match-toggle" data-toggle="${m.id}" aria-expanded="${open}" aria-label="${toggleLabel}" title="${toggleLabel}">${open ? "▾" : "▸"}</button>
+  return `<div class="match-row${m.conflict ? " match-row-conflict" : ""}${m.hidden ? " match-row-hidden" : ""}${open ? " match-row-open" : ""}" id="match-row-${m.id}">
+    ${toggleHtml}
     <div class="side-in"${sideToggle}>${sideIn}</div>
     <div class="side-out"${sideToggle}>${sideOut}</div>
     <div class="${discClass}">${discText}${conflictBadgeHtml(m)}${hiddenBadgeHtml(m)}${matchMetaHtml(m)}</div>
