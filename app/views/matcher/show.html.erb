@@ -190,6 +190,18 @@
   </section>
 </main>
 
+<%# One box for both lists below. It searches what the rows are made of rather
+    than what they happen to be showing -- a collapsed match names one of its
+    transactions, so the browser's own find can't see the rest of them. %>
+<div id="matches-search-bar">
+  <label class="matches-search-label" for="search-matches">Search matches</label>
+  <div class="search-wrap">
+    <input type="text" class="search" id="search-matches" placeholder="Any words — memo, HCB code, amount, date, note, or who matched it…">
+    <button type="button" class="search-clear" data-clear-target="search-matches" aria-label="Clear match search">×</button>
+  </div>
+  <span class="matches-search-note" id="matches-search-note"></span>
+</div>
+
 <section id="matches-section-unbalanced">
   <div class="panel-header">
     <h2>Unbalanced matches (<span id="matches-unbalanced-count">0</span>)</h2>

@@ -517,6 +517,22 @@ button.danger {
 
 #matches-section-balanced { margin-bottom: 30px; }
 
+/* One box above both match sections. It lines up with them rather than with
+   the panels above, which is what makes it read as belonging to the two lists
+   underneath it. */
+#matches-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 20px 10px;
+}
+
+#matches-search-bar .search-wrap { flex: 1; max-width: 480px; }
+
+.matches-search-label { font-size: 12px; font-weight: 600; color: #656d76; }
+
+.matches-search-note { font-size: 11px; color: #656d76; }
+
 /* Heading, the "show hidden" toggle and the refresh button on one line: the
    panel default stacks its children, which with three of them leaves the
    section header taller than the rows underneath it. */
@@ -597,6 +613,10 @@ button.danger {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* "+3 more" is about the row, not about the transaction named beside it, so
+   it reads as an aside rather than as part of the memo. */
+.match-side-more { color: #656d76; font-size: 11px; white-space: nowrap; }
 
 /* A collapsed side is part of the control that opens the row (see
    matchRowHtml); expanded, its legs have their own buttons and links. */
@@ -1241,6 +1261,8 @@ tr.zero-point { background: #fff8c5; }
   }
 
   .stats-row { gap: 12px 20px; }
+
+  #matches-search-bar { flex-wrap: wrap; }
 
   .match-row {
     grid-template-columns: 1fr;

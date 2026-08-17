@@ -168,6 +168,9 @@ const FILTER_FIELD_IDS = [
   "search-incoming", "search-incoming-amount", "search-incoming-after", "search-incoming-before",
   "search-outgoing", "search-outgoing-amount", "search-outgoing-after", "search-outgoing-before",
   "sort-incoming", "sort-outgoing",
+  // The match sections' own box (see renderMatchGroup), restored alongside the
+  // panels' filters so a refresh doesn't drop a search someone was reading.
+  "search-matches",
 ];
 // Read/written through .checked rather than .value, so they're kept apart from
 // the text/select fields above rather than special-cased inside the loops.
@@ -1136,6 +1139,45 @@ function conflictBadgeHtml(m) {
 // the panels above -- a row someone opened has to still be open afterwards.
 const expandedMatchIds = new Set();
 
+// True while the match search box has something in it, which forces every row
+// that survives the search open: someone searching for a memo has to be able
+// to see the leg that matched, and it may well be one a collapsed row doesn't
+// name. Read by matchRowHtml, set once per render rather than per row.
+let matchSearchActive = false;
+
+function matchSearchTokens() {
+  return document.getElementById("search-matches").value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+}
+
+// Everything about a match somebody might type looking for it: both sides'
+// dates, memos, HCB codes and amounts, plus the match's own id, note,
+// discrepancy and the people who made and changed it. Amounts go in twice --
+// as typed ("500.5") and as displayed ("$500.50") -- so either finds them.
+function matchSearchHaystack(m) {
+  const legs = m.incoming_ids.concat(m.outgoing_ids)
+    .map((id) => byId.get(id))
+    .filter(Boolean)
+    .flatMap((t) => [ t.date, t.memo, hcbCode(t) || "", fmt(t.amount), String(t.amount) ]);
+
+  return [
+    `#${m.id}`,
+    m.note || "",
+    m.created_by_name || "",
+    m.last_edited_by_name || "",
+    m.discrepancy === 0 ? "balanced" : `off by ${fmt(m.discrepancy)}`,
+    m.hidden ? "hidden" : "",
+    ...legs,
+  ].join(" ").toLowerCase();
+}
+
+// Every word has to appear somewhere in the match, in any order -- typing more
+// narrows, the same way the panels above behave.
+function matchMatchesSearch(m, tokens) {
+  if (!tokens.length) return true;
+  const haystack = matchSearchHaystack(m);
+  return tokens.every((token) => haystack.includes(token));
+}
+
 // One leg a side is already as short as the row gets, and opening it would
 // only add the leg's own buttons -- so there's nothing to open, and no caret
 // offering to. Most matches are one-to-one, which is exactly the case where a
@@ -1150,17 +1192,20 @@ function toggleMatchRow(id) {
   renderMatches();
 }
 
-// The collapsed form of one side: the leg itself when there's only one (which
-// is most matches, and reads better than "1 incoming"), otherwise how many
-// there are and what they come to.
-function matchSideSummaryHtml(txns, noun, emptyMsg) {
+// The collapsed form of one side: always the first leg, since the line has
+// room for it and a named transaction says far more about which match this is
+// than "4 incoming" does. What the rest come to follows it -- the total is the
+// figure the discrepancy is made of, so it can't be the thing that's dropped.
+function matchSideSummaryHtml(txns, emptyMsg) {
   if (!txns.length) return `<span class="side-empty">${emptyMsg}</span>`;
-  if (txns.length === 1) {
-    const t = txns[0];
-    return `<div class="match-side-summary-line">${t.date} — ${escapeHtml(t.memo)} — <strong>${fmt(t.amount)}</strong></div>`;
-  }
+
+  const first = txns[0];
+  const head = `${first.date} — ${escapeHtml(first.memo)} — <strong>${fmt(first.amount)}</strong>`;
+  if (txns.length === 1) return `<div class="match-side-summary-line">${head}</div>`;
+
   const total = txns.reduce((s, t) => s + t.amount, 0);
-  return `<div class="match-side-summary-line">${txns.length} ${noun} — <strong>${fmt(total)}</strong></div>`;
+  const rest = txns.length - 1;
+  return `<div class="match-side-summary-line">${head} <span class="match-side-more">+${rest} more · ${fmt(total)} in total</span></div>`;
 }
 
 function matchSideLegsHtml(txns, emptyMsg, { bold }) {
@@ -1184,10 +1229,10 @@ function matchRowHtml(m) {
   const outgoing = m.outgoing_ids.map((id) => byId.get(id)).filter(Boolean);
   const discClass = m.discrepancy === 0 ? "discrepancy-ok" : "discrepancy-bad";
   const discText = m.discrepancy === 0 ? "balanced" : `off by ${fmt(m.discrepancy)}`;
-  const collapsible = matchIsCollapsible(incoming, outgoing);
+  const collapsible = matchIsCollapsible(incoming, outgoing) && !matchSearchActive;
   const open = !collapsible || expandedMatchIds.has(m.id);
-  const sideIn = open ? matchSideLegsHtml(incoming, "No incoming", { bold: true }) : matchSideSummaryHtml(incoming, "incoming", "No incoming");
-  const sideOut = open ? matchSideLegsHtml(outgoing, "No outgoing", { bold: false }) : matchSideSummaryHtml(outgoing, "outgoing", "No outgoing");
+  const sideIn = open ? matchSideLegsHtml(incoming, "No incoming", { bold: true }) : matchSideSummaryHtml(incoming, "No incoming");
+  const sideOut = open ? matchSideLegsHtml(outgoing, "No outgoing", { bold: false }) : matchSideSummaryHtml(outgoing, "No outgoing");
   // Collapsed, the summary is inert text, so the whole of it is part of the
   // control that opens the row. Expanded it isn't: the legs carry their own
   // info buttons and HCB links, and a click on one of those mustn't also
@@ -1244,9 +1289,12 @@ async function setMatchHidden(id, hidden) {
   render();
 }
 
-function renderMatchGroup(group, listId, countId, emptyMsg, { showHidden, hiddenCountId, toggleId }) {
-  const hidden = group.filter((m) => m.hidden);
-  const shown = showHidden ? group : group.filter((m) => !m.hidden);
+// Returns how many rows it put on screen, which is what the search note above
+// the two sections counts up.
+function renderMatchGroup(group, listId, countId, emptyMsg, { showHidden, hiddenCountId, toggleId, tokens, query }) {
+  const found = group.filter((m) => matchMatchesSearch(m, tokens));
+  const hidden = found.filter((m) => m.hidden);
+  const shown = showHidden ? found : found.filter((m) => !m.hidden);
 
   // The section's own count is what's on screen; the hidden ones are counted
   // beside the checkbox that brings them back, so neither number is a
@@ -1261,14 +1309,18 @@ function renderMatchGroup(group, listId, countId, emptyMsg, { showHidden, hidden
 
   if (shown.length === 0) {
     const only = hidden.length ? ` ${hidden.length} hidden match${hidden.length === 1 ? "" : "es"} not shown.` : "";
-    list.innerHTML = `<div class="empty-msg">${emptyMsg}${only}</div>`;
-    return;
+    // "Nothing here" and "nothing here matching what you typed" are different
+    // answers, and only one of them means the section is actually empty.
+    const message = tokens.length && group.length ? `Nothing here matches “${escapeHtml(query)}”.` : emptyMsg;
+    list.innerHTML = `<div class="empty-msg">${message}${only}</div>`;
+    return shown.length;
   }
 
   const sorted = [...shown].sort(byRecentlyTouched);
   list.innerHTML = sorted.map(matchRowHtml).join("");
 
   delegateMatchListControls(list);
+  return shown.length;
 }
 
 // Delegated for the same reason the transaction panels are (see
@@ -1317,16 +1369,31 @@ function renderMatches() {
     return;
   }
 
-  renderMatchGroup(unbalancedMatches(), "matches-unbalanced-list", "matches-unbalanced-count", "No discrepancies 🎉", {
+  const query = document.getElementById("search-matches").value.trim();
+  const tokens = matchSearchTokens();
+  matchSearchActive = tokens.length > 0;
+
+  const shownUnbalanced = renderMatchGroup(unbalancedMatches(), "matches-unbalanced-list", "matches-unbalanced-count", "No discrepancies 🎉", {
     showHidden: document.getElementById("show-hidden-unbalanced").checked,
     hiddenCountId: "matches-unbalanced-hidden-count",
     toggleId: "show-hidden-unbalanced",
+    tokens: tokens,
+    query: query,
   });
-  renderMatchGroup(balancedMatches(), "matches-balanced-list", "matches-balanced-count", "No balanced matches yet.", {
+  const shownBalanced = renderMatchGroup(balancedMatches(), "matches-balanced-list", "matches-balanced-count", "No balanced matches yet.", {
     showHidden: document.getElementById("show-hidden-balanced").checked,
     hiddenCountId: "matches-balanced-hidden-count",
     toggleId: "show-hidden-balanced",
+    tokens: tokens,
+    query: query,
   });
+
+  // Both sections' counts move when a search narrows them, so say what the
+  // search did across the two of them rather than leaving the reader to add
+  // the headings up.
+  document.getElementById("matches-search-note").textContent = matchSearchActive
+    ? `${shownUnbalanced + shownBalanced} of ${matches.length} matches`
+    : "";
 }
 
 // The two buckets the page splits matches into, shared by the sections that
@@ -1571,6 +1638,13 @@ document.getElementById("btn-cancel").addEventListener("click", cancelMatch);
 document.getElementById("btn-refresh-matches").addEventListener("click", refreshMatches);
 // Only the match sections redraw: which hidden matches are on screen has
 // nothing to do with the transaction panels above.
+// Debounced like the panels' own search boxes: every keystroke redraws both
+// match lists, and searching forces their rows open.
+document.getElementById("search-matches").addEventListener("input", debounce(() => {
+  renderMatches();
+  // Only renderLists writes the snapshot, and this box doesn't touch the lists.
+  saveFilterSnapshot();
+}, 150));
 document.getElementById("show-hidden-unbalanced").addEventListener("change", renderMatches);
 document.getElementById("show-hidden-balanced").addEventListener("change", renderMatches);
 document.getElementById("btn-refresh-transactions").addEventListener("click", () => refreshTransactions({ announce: true }));
