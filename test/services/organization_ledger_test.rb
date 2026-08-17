@@ -85,7 +85,58 @@ class OrganizationLedgerTest < ActiveSupport::TestCase
     assert_equal "txn_far", by_id["txn_far"]&.id
   end
 
+  # The warm-cache path: once a drain has written its derived side cache, legs
+  # are resolved from that (small) entry rather than from the by-id index of
+  # whole raw transactions, which is megabytes for a real organization. Same
+  # answers either way -- that's what makes it safe to skip the big read.
+  test "write_legs_by_id resolves legs from the derived index without the by-id one" do
+    with_memory_cache do
+      Hcb::OrganizationTransactions.new(@client, "org_1").all
+      # Leaves only the derived entry behind, so anything still resolving proves
+      # it didn't need the raw by-id index to do it.
+      Rails.cache.delete_matched(/:by_id\z/)
+
+      by_id = OrganizationLedger.new(@client, "org_1").write_legs_by_id(%w[txn_1 txn_2 txn_far])
+
+      assert_equal 100.0, by_id["txn_1"].amount
+      assert_equal(-100.0, by_id["txn_2"].amount)
+      assert_nil by_id["txn_far"], "an id outside the org's drain must not resolve for a write"
+    end
+  end
+
+  # A declined transaction is in the drain but out of the ledger's own
+  # (declined-excluded) ordering, so it's the case where a leg lookup keyed on
+  # that ordering would have answered differently from the by-id index. Both
+  # side caches have to agree, or whether a leg resolves would come down to
+  # which entry happened to still be warm.
+  test "write_legs_by_id resolves a declined leg from either side cache" do
+    declined = { "id" => "txn_declined", "date" => "2026-01-06", "memo" => "Declined", "amount_cents" => -300, "declined" => true }
+    client = FakeHcbClient.new(transactions: [ declined ] + @client.transactions("org_1")["data"])
+
+    with_memory_cache do
+      Hcb::OrganizationTransactions.new(client, "org_1").all
+
+      from_by_id = OrganizationLedger.new(client, "org_1").write_legs_by_id(%w[txn_declined])
+      Rails.cache.delete_matched(/:by_id\z/)
+      from_derived = OrganizationLedger.new(client, "org_1").write_legs_by_id(%w[txn_declined])
+
+      assert_equal(-3.0, from_derived["txn_declined"]&.amount)
+      assert_equal from_by_id["txn_declined"].amount, from_derived["txn_declined"].amount
+    end
+  end
+
   private
+
+  # The test environment runs on a null store, so every side cache a drain
+  # writes is a miss and only the fall-back paths are ever exercised. Tests
+  # about the warm paths need a store that actually keeps what it's given.
+  def with_memory_cache
+    original = Rails.cache
+    Rails.cache = ActiveSupport::Cache::MemoryStore.new
+    yield
+  ensure
+    Rails.cache = original
+  end
 
   # A ledger for org_1 whose client can also answer for txn_far -- a
   # transaction the asking user can see elsewhere, but that is not part of

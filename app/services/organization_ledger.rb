@@ -16,6 +16,14 @@ class OrganizationLedger
     def beginning? = index == -1
   end
 
+  # A leg as the write paths (Matches::Create/Update) see one: an id and an
+  # amount, which is all either of them reads off it. Stands in for a full
+  # TransactionPresenter there so #write_legs_by_id can answer from the small
+  # derived index instead of the whole-org raw JSON -- see #leg_for.
+  Leg = Struct.new(:id, :amount_cents, keyword_init: true) do
+    def amount = (amount_cents / 100.0).round(2)
+  end
+
   # Named rather than inlined into #transaction_by_id because it also has to be
   # *invalidated* elsewhere: Hcb::OrganizationTransactions#refresh_one! drops
   # this key so a day-old copy can't shadow a transaction the user just asked
@@ -102,9 +110,17 @@ class OrganizationLedger
     raise unless e.response.status == 404
     nil
   end
+  # Resolves the legs a match is about to be saved with, to the extent needed to
+  # validate their direction and sum them: #Leg, not a full presenter.
+  #
+  # Answered from the drain-time derived index where it can be (one small cache
+  # entry, already needed by #classify on the same request) rather than through
+  # #transaction_by_id, whose by-id lookup deserializes the organization's
+  # entire raw transaction history -- megabytes, for the two or three amounts a
+  # match creation actually reads.
   def write_legs_by_id(ids, existing: [])
     existing = existing.to_set
-    ids.uniq.index_with { |id| transaction_by_id(id, remote: existing.include?(id)) }
+    ids.uniq.index_with { |id| leg_for(id, remote: existing.include?(id)) }
   end
 
   # How a match relates to a cutoff, given its transaction ids:
@@ -129,6 +145,20 @@ class OrganizationLedger
   end
 
   private
+
+  # Falls back to the full lookup when the derived index can't answer: it's
+  # missing entirely (first request after a drain), it predates amounts_cents
+  # (a cache entry written by an older deploy), or the id simply isn't part of
+  # this organization's drain -- the last of which is the case #write_legs_by_id
+  # exists to reject, and the fallback rejects it too unless the caller said the
+  # match already holds it.
+  def leg_for(id, remote:)
+    amounts = derived_order&.dig(:amounts_cents)
+    amount = amounts && amounts[id]
+    return Leg.new(id: id, amount_cents: amount) if amount
+
+    transaction_by_id(id, remote: remote)
+  end
 
   def index_of(id)
     fast = derived_order&.dig(:position_by_id, id)

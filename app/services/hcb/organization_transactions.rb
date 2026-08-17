@@ -339,10 +339,19 @@ module Hcb
         balances_cents[i] = running
       end
 
+      # amounts_cents is here rather than left to a #find on the by-id index
+      # because the write paths only ever want a leg's amount, and #find has to
+      # deserialize the whole org's raw transaction JSON (megabytes) to answer
+      # -- see OrganizationLedger#write_legs_by_id. Keyed over the *whole* drain
+      # rather than the declined-excluded ordering above, so it answers for
+      # exactly the same set of ids #find does and the two can't disagree.
+      amounts_cents = result.to_h { |t| [ t["id"], t["amount_cents"] || 0 ] }
+
       Rails.cache.write(derived_key, {
         position_by_id: position_by_id,
         ids: ids,
         dates: dates,
+        amounts_cents: amounts_cents,
         balances_cents: balances_cents
       }, expires_in: TTL)
     end

@@ -410,15 +410,53 @@ function wireCopyCodes(root) {
   root.querySelectorAll(".hcb-code").forEach((el) => {
     el.addEventListener("click", async (e) => {
       e.stopPropagation();
-      const code = el.dataset.copy;
-      if (!code) return;
-      const ok = await copyToClipboard(code);
-      // Both clipboard paths refused (they shouldn't outside an exotic
-      // browser/permissions setup). Leave the code selected so the ✗ comes
-      // with something the user can actually act on.
-      if (!ok) selectText(el);
-      flashCopyResult(el, ok);
+      await copyRowCode(el);
     });
+  });
+}
+
+async function copyRowCode(el) {
+  const code = el.dataset.copy;
+  if (!code) return;
+  const ok = await copyToClipboard(code);
+  // Both clipboard paths refused (they shouldn't outside an exotic
+  // browser/permissions setup). Leave the code selected so the ✗ comes
+  // with something the user can actually act on.
+  if (!ok) selectText(el);
+  flashCopyResult(el, ok);
+}
+
+// wireRowControls, but as a single delegated listener on the container instead
+// of one listener per control per row -- for the matcher's lists, which are
+// redrawn wholesale (`innerHTML =`) on every render and can hold thousands of
+// rows. Wiring those individually was four addEventListener calls and four
+// querySelectorAll passes per redraw; this is one listener, attached once, that
+// outlives every redraw because innerHTML replaces the rows and not the
+// container holding them.
+//
+// Ordering replaces the stopPropagation the per-row handlers used: a click is
+// dispatched to whichever control it landed inside, and only reaches onRowClick
+// if it landed on none of them.
+function delegateRowControls(root, onRowClick) {
+  root.addEventListener("click", async (e) => {
+    const code = e.target.closest(".hcb-code");
+    if (code) {
+      await copyRowCode(code);
+      return;
+    }
+    // The anchor opens HCB by itself; the row underneath must not also react.
+    if (e.target.closest(".hcb-link")) return;
+
+    const info = e.target.closest(".info-icon");
+    if (info) {
+      const t = byId.get(info.dataset.id);
+      if (t) showDetailsModal(t);
+      return;
+    }
+
+    if (!onRowClick) return;
+    const row = e.target.closest(".row");
+    if (row) onRowClick(row.dataset.id, e);
   });
 }
 

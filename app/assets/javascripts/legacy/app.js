@@ -587,8 +587,9 @@ function HCBLinkHtml(t) {
 }
 
 // A <button> rather than plain text: clicking the code copies it, so it needs
-// to be reachable by keyboard and announced as an action. wireRowControls does
-// the copying; legacy.css strips the default button chrome back to bare text.
+// to be reachable by keyboard and announced as an action. wireRowControls (or,
+// for the big lists, delegateRowControls) does the copying; legacy.css strips
+// the default button chrome back to bare text.
 function hcbCodeHtml(t) {
   const code = hcbCode(t);
   if (!code) return "";
@@ -709,16 +710,22 @@ function renderLists() {
     ? outgoing.map((t) => matchesRowHtml(t, rowClass(t, selectedOutgoingIds, "selected"))).join("")
     : emptyHtml(showMatchedOutgoing);
 
-  inList.querySelectorAll(".row").forEach((el) => {
-    el.addEventListener("click", (e) => onIncomingClick(el.dataset.id, e));
-  });
-  outList.querySelectorAll(".row").forEach((el) => {
-    el.addEventListener("click", (e) => onOutgoingClick(el.dataset.id, e));
-  });
-  wireRowControls(inList);
-  wireRowControls(outList);
+  delegateListControls(inList, outList);
 
   saveFilterSnapshot();
+}
+
+// Once per container, not once per render: the rows inside are replaced on every
+// redraw, the container isn't, so the listener survives and a redraw costs
+// nothing but the innerHTML write. See delegateRowControls (details.js).
+let listControlsDelegated = false;
+
+function delegateListControls(inList, outList) {
+  if (listControlsDelegated) return;
+  listControlsDelegated = true;
+
+  delegateRowControls(inList, onIncomingClick);
+  delegateRowControls(outList, onOutgoingClick);
 }
 
 function rangeSelection(order, selected, anchorId, id) {
@@ -952,7 +959,10 @@ async function confirmMatch() {
   if (selectedIncomingIds.length === 0 && selectedOutgoingIds.length === 0) return;
   const isEdit = editingMatchId !== null;
   matchBusy = true;
-  render();
+  // Only the tray reads matchBusy (the button it disables and relabels), and a
+  // full render redraws every list on the page -- which is the one thing the
+  // click that starts a save shouldn't wait on.
+  renderTray();
   try {
     const res = await fetch(`${API_BASE}/api/matches${isEdit ? "/" + editingMatchId : ""}`, {
       method: isEdit ? "PATCH" : "POST",
@@ -1244,23 +1254,37 @@ function renderMatchGroup(group, listId, countId, emptyMsg, { showHidden, hidden
   const sorted = [...shown].sort(byRecentlyTouched);
   list.innerHTML = sorted.map(matchRowHtml).join("");
 
-  list.querySelectorAll("[data-toggle]").forEach((el) => {
-    el.addEventListener("click", () => toggleMatchRow(Number(el.dataset.toggle)));
+  delegateMatchListControls(list);
+}
+
+// Delegated for the same reason the transaction panels are (see
+// delegateListControls): every match action was a listener per button per row,
+// re-attached on every render, on a list that can run to hundreds of matches.
+const delegatedMatchLists = new Set();
+
+function delegateMatchListControls(list) {
+  if (delegatedMatchLists.has(list.id)) return;
+  delegatedMatchLists.add(list.id);
+
+  // The legs of an expanded match row carry the same info/HCB-code/link
+  // controls a transaction row does; no row-click handler, since a match row's
+  // own clickable parts are its buttons.
+  delegateRowControls(list);
+
+  list.addEventListener("click", (e) => {
+    const el = e.target.closest("[data-toggle], [data-view], [data-edit], [data-hide], [data-delete]");
+    if (!el || el.disabled) return;
+
+    const { toggle, view, edit, hide, delete: undo } = el.dataset;
+    if (toggle !== undefined) return toggleMatchRow(Number(toggle));
+    if (view !== undefined) return showMatchModal(view);
+    if (edit !== undefined) return editMatch(Number(edit));
+    if (hide !== undefined) {
+      const id = Number(hide);
+      return setMatchHidden(id, !matches.some((m) => m.id === id && m.hidden));
+    }
+    if (undo !== undefined) return deleteMatch(Number(undo));
   });
-  list.querySelectorAll("[data-hide]").forEach((el) => {
-    const id = Number(el.dataset.hide);
-    el.addEventListener("click", () => setMatchHidden(id, !matches.some((m) => m.id === id && m.hidden)));
-  });
-  list.querySelectorAll("[data-view]").forEach((el) => {
-    el.addEventListener("click", () => showMatchModal(el.dataset.view));
-  });
-  list.querySelectorAll("[data-edit]").forEach((el) => {
-    el.addEventListener("click", () => editMatch(Number(el.dataset.edit)));
-  });
-  list.querySelectorAll("[data-delete]").forEach((el) => {
-    el.addEventListener("click", () => deleteMatch(Number(el.dataset.delete)));
-  });
-  wireRowControls(list);
 }
 
 function renderMatches() {
