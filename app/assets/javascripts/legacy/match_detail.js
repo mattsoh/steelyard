@@ -384,6 +384,53 @@ function renderMatchDetail(m) {
   wireCopyCodes(body);
 }
 
+// What the server actually said, carried on the Error so the popup can tell a
+// match that isn't there apart from one the server failed to build. Reporting
+// both as "it may have been undone" sent people looking for a match that was
+// sitting there perfectly intact.
+//
+// A 500 response carries an error_id (see
+// ApplicationController#report_unexpected_error) which is the only handle on
+// the failure in AppSignal afterwards -- swallowing it here is what made a
+// server-side error indistinguishable from a deleted match.
+async function matchLoadError(res) {
+  const body = await res.json().catch(() => ({}));
+  const err = new Error(body.error || `Request failed (${res.status}).`);
+  err.status = res.status;
+  err.errorId = body.error_id;
+  return err;
+}
+
+function matchLoadErrorHtml(e) {
+  if (e.status === 404) {
+    return `<div class="empty-msg">Could not load this match. It may have been undone, or you may not have access to it.</div>`;
+  }
+
+  // No status at all means the response never arrived -- the network dropped,
+  // or something in front of the app timed the request out. Worth saying so
+  // plainly: it's the one case where trying again is likely to work.
+  const detail = e.status
+    ? `Could not load this match: the server couldn't build it (error ${e.status}).`
+    : `Could not load this match: the request didn't complete. It may have timed out.`;
+  const ref = e.errorId ? ` Reference: ${escapeHtml(String(e.errorId))}.` : "";
+  return `<div class="empty-msg">${detail}${ref} <a href="#" class="nav-link match-load-retry">Retry</a></div>`;
+}
+
+function showMatchLoadError(id, e) {
+  const body = document.getElementById("match-modal-body");
+  body.innerHTML = matchLoadErrorHtml(e);
+
+  const retry = body.querySelector(".match-load-retry");
+  if (!retry) return;
+  // Redrawing the same match in the popup that's already open, so this isn't a
+  // navigation and mustn't push another history entry on top of the one
+  // opening it already left.
+  retry.addEventListener("click", (event) => {
+    event.preventDefault();
+    showMatchModal(id, { updateUrl: false });
+  });
+}
+
 async function showMatchModal(id, { updateUrl = true } = {}) {
   const overlay = document.getElementById("match-modal-overlay");
   if (!overlay) return;
@@ -403,13 +450,13 @@ async function showMatchModal(id, { updateUrl = true } = {}) {
   try {
     const res = await fetch(`${MATCH_API_BASE}/api/matches/${id}`);
     if (await handledReauthRequired(res)) return;
-    if (!res.ok) throw new Error("bad response");
+    if (!res.ok) throw await matchLoadError(res);
     data = await res.json();
   } catch (e) {
     // Still the match being looked at? They may have closed the popup, or
     // opened another match, while the request was in flight.
     if (matchDetailId !== String(id)) return;
-    document.getElementById("match-modal-body").innerHTML = `<div class="empty-msg">Could not load this match. It may have been undone, or you may not have access to it.</div>`;
+    showMatchLoadError(id, e);
     return;
   }
 
