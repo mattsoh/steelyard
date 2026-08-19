@@ -1,20 +1,28 @@
 class Api::TransactionsController < ApplicationController
   include OrganizationScoped
+  include RawJsonRendering
 
   # The matcher's working set: transactions after the zero-balance cutoff,
   # plus anything referenced by a still-visible match (which may predate the
   # cutoff -- app.js needs those rows in its byId map to render match legs;
   # they never appear in the unmatched lists because they're already used).
+  #
+  # Assembled from strings rather than built as a Hash and handed to #to_json:
+  # the rows come out of the drain's presentation cache already serialized (see
+  # Hcb::OrganizationTransactions#presented), so parsing them back into Ruby
+  # objects just to re-generate the identical JSON is work this endpoint --
+  # the heaviest read in the app -- does not have to do.
   def index
     ledger = OrganizationLedger.new(hcb_client, organization_id)
-    transactions = (ledger.after_cutoff + referenced_by_visible_matches(ledger)).uniq(&:id)
+    cutoff = ledger.effective_cutoff
+    ids = (ledger.after_cutoff_ids + referenced_by_visible_matches(ledger)).uniq
 
-    render json: {
-      zero_balance_date: ledger.effective_cutoff&.date,
-      zero_balance_selected_id: ledger.effective_cutoff&.transaction_id,
-      zero_balance_options: ledger.zero_options.map { |o| { date: o.date, transaction_id: o.transaction_id, beginning: o.beginning? } },
-      transactions: transactions.map(&:as_json)
-    }
+    render json: json_object(
+      zero_balance_date: cutoff&.date.to_json,
+      zero_balance_selected_id: cutoff&.transaction_id.to_json,
+      zero_balance_options: ledger.zero_options.map { |o| { date: o.date, transaction_id: o.transaction_id, beginning: o.beginning? } }.to_json,
+      transactions: "[#{ledger.transaction_fragments(ids).join(',')}]"
+    )
   end
 
   # One HCB page at a time, so the frontend can render rows as they arrive
@@ -115,6 +123,8 @@ class Api::TransactionsController < ApplicationController
       .map { |change| { id: change.match.id, from: change.from_cents / 100.0, to: change.to_cents / 100.0 } }
   end
 
+  # Ids only: whether each one can be resolved at all is settled by
+  # OrganizationLedger#transaction_fragments, which has to look them up anyway.
   def referenced_by_visible_matches(ledger)
     MatchTransaction.active.where(hcb_organization_id: organization_id)
       .pluck(:match_id, :hcb_transaction_id)
@@ -123,6 +133,5 @@ class Api::TransactionsController < ApplicationController
       .map { |pairs| pairs.map(&:last) }
       .reject { |ids| ledger.classify(ids) == :hidden }
       .flatten
-      .filter_map { |id| ledger.transaction_by_id(id) }
   end
 end

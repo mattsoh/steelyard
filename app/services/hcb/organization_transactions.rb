@@ -72,12 +72,15 @@ module Hcb
     def all(bypass_cache: false)
       return drain if bypass_cache
 
-      computed = false
-      result = Rails.cache.fetch(cache_key, expires_in: TTL, race_condition_ttl: 10.seconds) do
-        computed = true
-        redrain
+      result = cached_result
+      unless result
+        computed = false
+        result = Rails.cache.fetch(cache_key, expires_in: TTL, race_condition_ttl: 10.seconds) do
+          computed = true
+          redrain
+        end
+        computed ? publish(result) : LocalCache.write(cache_key, version_token, result)
       end
-      publish(result) if computed
 
       maybe_refresh_ahead
       result
@@ -89,25 +92,43 @@ module Hcb
     # whole org history to get them. Returns nil on a cache miss (side caches
     # not yet warm for this drain); callers fall back to the slower path.
     #
-    # Memoized per instance: callers like Api::TransactionsController#index
-    # call this once per referenced match leg (dozens to hundreds of times in
-    # one request), and Rails.cache.read deep-copies/deserializes the whole
-    # by-id blob on every call -- without memoizing, that's the whole org's
+    # Memoized (see #memoized): callers like Api::MatchesController call this
+    # once per referenced match leg (dozens to hundreds of times in one
+    # request), and Rails.cache.read deep-copies/deserializes the whole by-id
+    # blob on every call -- without memoizing, that's the whole org's
     # transaction history re-deserialized once per referenced id.
     def find(id)
       by_id_cache&.dig(id)
     end
+
+    # Each drained transaction already rendered to its response JSON, keyed by
+    # id -- the same fragment Api::TransactionsController#index used to build
+    # per request by wrapping every raw hash in a TransactionPresenter and
+    # calling #as_json on it. Computed once per drain (see #write_side_caches)
+    # so a warm request assembles its response by joining strings instead of
+    # re-presenting and re-serializing the org's whole working set.
+    #
+    # Covers the full drain, declined transactions included, so it can answer
+    # for exactly the ids #find can. Returns nil on a cache miss; callers fall
+    # back to presenting the raw transaction themselves.
+    def presented = memoized(presented_key) { Rails.cache.read(presented_key) }
+
+    # Display order for the full-history ledger view (Api::LedgerController):
+    # every drained id sorted by the date the ledger *shows* -- when the
+    # transaction was sent, which only TransactionPresenter knows how to work
+    # out -- with the amount and declined flag each row needs to carry the
+    # running balance forward. Same reasoning as #presented: sorting the whole
+    # org history by a presenter-derived key is drain-time work, not
+    # once-per-request work. Returns nil on a cache miss.
+    def ledger_order = memoized(ledger_order_key) { Rails.cache.read(ledger_order_key) }
 
     # Chronological (oldest-first, declined-excluded) position/balance data
     # for the same drain result, keyed by #write_side_caches -- lets
     # OrganizationLedger answer "where does this id sit relative to the
     # cutoff" and "what are the zero-balance crossings" in O(1)/O(crossings)
     # instead of re-walking full org history per request. Returns nil on a
-    # cache miss. Memoized per instance, same reasoning as #find above.
-    def derived
-      return @derived if defined?(@derived)
-      @derived = Rails.cache.read(derived_key)
-    end
+    # cache miss. Memoized, same reasoning as #find above.
+    def derived = memoized(derived_key) { Rails.cache.read(derived_key) }
 
     # Drains fresh and unconditionally overwrites the cache, regardless of
     # what's currently in it. Used by WarmOrganizationTransactionsJob; unlike
@@ -143,7 +164,7 @@ module Hcb
     # splicing an arbitrary id into an org's cache on request would let a
     # caller put another org's transaction in it.
     def refresh_one!(id)
-      current = Rails.cache.read(cache_key) || all
+      current = cached_result || all
       index = current.index { |t| t["id"] == id }
       return nil if index.nil?
 
@@ -183,7 +204,7 @@ module Hcb
     #              page can account for; the caller should fall back to a full
     #              redrain (WarmOrganizationTransactionsJob, in the background)
     def sync_head!
-      cached = Rails.cache.read(cache_key)
+      cached = cached_result
       return :deep if cached.blank?
 
       head = page(limit: PEEK_SIZE)["data"] || []
@@ -220,7 +241,6 @@ module Hcb
     # fetched_at advances exactly when a new result is published, which is the
     # signal a caller waiting on #sync_head!'s :deep case watches for.
     def sync_state
-      stamp = Rails.cache.read(fetched_at_key)
       { fetched_at: stamp && stamp[:at].to_f, count: stamp && stamp[:count] }
     end
 
@@ -244,7 +264,7 @@ module Hcb
     # doesn't re-drain from scratch.
     def fetch_page(stream_id:, after: nil, limit: PAGE_SIZE)
       if after.blank?
-        cached = Rails.cache.read(cache_key)
+        cached = cached_result
         return { data: cached, has_more: false, next_after: nil, total_count: cached.size } if cached
 
         baseline = Rails.cache.read(baseline_key)
@@ -282,15 +302,21 @@ module Hcb
 
     def derived_key = "#{cache_key}:derived"
 
+    def presented_key = "#{cache_key}:presented"
+
+    def ledger_order_key = "#{cache_key}:ledger_order"
+
     def baseline_key = "#{cache_key}:baseline"
 
-    # v2 holds a {at:, count:} stamp rather than the bare Time v1 held, so
+    # v2 held a {at:, count:} stamp rather than the bare Time v1 held, so
     # #sync_state can report how much is cached without deserializing the whole
-    # transaction array on every poll. Renaming (rather than reading both
-    # shapes) means an already-warm v1 cache is simply treated as unstamped,
-    # which #maybe_refresh_ahead reads as due-for-a-refresh -- so the first
-    # request after a deploy re-stamps it and the transition heals itself.
-    def fetched_at_key = "#{cache_key}:fetched:v2"
+    # transaction array on every poll; v3 adds the per-drain :token every
+    # Hcb::LocalCache entry is validated against. Renaming (rather than reading
+    # both shapes) means an already-warm older cache is simply treated as
+    # unstamped, which #maybe_refresh_ahead reads as due-for-a-refresh and
+    # LocalCache reads as "don't memo this" -- so the first request after a
+    # deploy re-stamps it and the transition heals itself.
+    def fetched_at_key = "#{cache_key}:fetched:v3"
 
     def refresh_lock_key = "#{cache_key}:refreshing"
 
@@ -300,9 +326,47 @@ module Hcb
       @filters.to_a.sort_by(&:first).to_h.to_json
     end
 
-    def by_id_cache
-      return @by_id_cache if defined?(@by_id_cache)
-      @by_id_cache = Rails.cache.read(by_id_key)
+    def by_id_cache = memoized(by_id_key) { Rails.cache.read(by_id_key) }
+
+    # The drained history as it currently stands, or nil. Deliberately *not*
+    # memoized on the instance, and it re-reads the stamp: this is the read
+    # that has to notice the primary cache expiring (the stamp expires with
+    # it, so an expired drain reads as unversioned and no local copy can stand
+    # in for it) and the caller's next move is to redrain. Each flow that
+    # needs it calls it once, so there's nothing here worth memoizing anyway.
+    def cached_result
+      token = version_token(reload: true)
+      LocalCache.read(cache_key, token) || LocalCache.write(cache_key, token, Rails.cache.read(cache_key))
+    end
+
+    # The freshness stamp. Read once per instance unless a caller asks for it
+    # again: everything #memoized fronts is validated against the token in
+    # here, so a request that touches four drain caches pays one small read
+    # instead of four large ones.
+    def stamp(reload: false)
+      @stamp = Rails.cache.read(fetched_at_key) if reload || !defined?(@stamp)
+      @stamp
+    end
+
+    def version_token(reload: false) = stamp(reload: reload) && stamp[:token]
+
+    # Reads through Hcb::LocalCache (see there for why), with a per-instance
+    # memo in front of it so a caller in a loop doesn't even pay the token
+    # comparison -- and so the per-instance memoization these keys have always
+    # had survives when the local cache is disabled (no stamp yet, or a store
+    # that drops writes).
+    def memoized(key)
+      @memo ||= {}
+      return @memo[key] if @memo.key?(key)
+
+      hit = LocalCache.read(key, version_token)
+      return @memo[key] = hit unless hit.nil?
+
+      value = yield
+      # The block may itself have drained and published, which advances the
+      # token -- store under the new one, or the entry could never be read.
+      LocalCache.write(key, version_token, value)
+      @memo[key] = value
     end
 
     # Every "we have a new authoritative copy of the org's transactions" write
@@ -311,9 +375,21 @@ module Hcb
     # full result -- a drain, a stream's last page, a #sync_head! splice --
     # goes through here, so none of them can update one and forget another.
     def publish(result)
+      # Stamped before anything else is written, so the token every reader
+      # validates its local copy against is the one belonging to *this* drain
+      # -- including this instance's own memo, which the stamp assignment
+      # below invalidates along with it.
+      new_stamp = { at: Time.now, count: result.size, token: SecureRandom.hex(8) }
+      @stamp = new_stamp
+      @memo = {}
+
       Rails.cache.write(cache_key, result, expires_in: TTL)
       Rails.cache.write(baseline_key, result, expires_in: BASELINE_TTL)
-      Rails.cache.write(fetched_at_key, { at: Time.now, count: result.size }, expires_in: TTL)
+      Rails.cache.write(fetched_at_key, new_stamp, expires_in: TTL)
+      # Seeded rather than left for the next read to fault in: the process that
+      # just drained (a warming job, or the request that missed) already has
+      # the objects in hand, so this is free where re-reading them isn't.
+      LocalCache.write(cache_key, new_stamp[:token], result)
       write_side_caches(result)
       result
     end
@@ -322,7 +398,13 @@ module Hcb
     # O(n) walk that used to happen fresh inside OrganizationLedger on every
     # single request that needed a lookup or cutoff classification.
     def write_side_caches(result)
-      Rails.cache.write(by_id_key, result.index_by { |t| t["id"] }, expires_in: TTL)
+      token = version_token
+
+      by_id = result.index_by { |t| t["id"] }
+      Rails.cache.write(by_id_key, by_id, expires_in: TTL)
+      LocalCache.write(by_id_key, token, by_id)
+
+      write_presentation_caches(result, token)
 
       ordered = result.reject { |t| t["declined"] }.reverse
       position_by_id = {}
@@ -347,13 +429,45 @@ module Hcb
       # exactly the same set of ids #find does and the two can't disagree.
       amounts_cents = result.to_h { |t| [ t["id"], t["amount_cents"] || 0 ] }
 
-      Rails.cache.write(derived_key, {
+      derived = {
         position_by_id: position_by_id,
         ids: ids,
         dates: dates,
         amounts_cents: amounts_cents,
         balances_cents: balances_cents
-      }, expires_in: TTL)
+      }
+      Rails.cache.write(derived_key, derived, expires_in: TTL)
+      LocalCache.write(derived_key, token, derived)
+    end
+
+    # The response-shaped half of the side caches: every transaction rendered
+    # to the JSON the frontend reads, plus the order and per-row arithmetic
+    # inputs the full-history ledger view needs to lay those fragments out.
+    #
+    # Presenting the whole drain here rather than per request is the point --
+    # a warm /api/transactions or /api/ledger then costs a string join, not a
+    # presenter allocation and a JSON generation per row. Storing the
+    # fragments as strings (rather than hashes) is deliberate too: the strings
+    # are what the response wants, and a hash of strings is markedly cheaper to
+    # Marshal back in than the same data as nested hashes.
+    def write_presentation_caches(result, token)
+      presenters = result.map { |t| TransactionPresenter.new(t) }
+
+      presented = presenters.to_h { |p| [ p.id, p.as_json.to_json ] }
+      Rails.cache.write(presented_key, presented, expires_in: TTL)
+      LocalCache.write(presented_key, token, presented)
+
+      # Sorted exactly as Api::LedgerController#index sorted it inline: by the
+      # date the row displays (when it was sent), id breaking ties so the order
+      # is stable across drains.
+      ordered = presenters.sort_by { |p| [ p.date.to_s, p.id.to_s ] }
+      ledger_order = {
+        ids: ordered.map(&:id),
+        amounts_cents: ordered.map(&:amount_cents),
+        declined: ordered.map(&:declined?)
+      }
+      Rails.cache.write(ledger_order_key, ledger_order, expires_in: TTL)
+      LocalCache.write(ledger_order_key, token, ledger_order)
     end
 
     # No-ops unless @client can identify who's asking (a real, logged-in
@@ -365,7 +479,6 @@ module Hcb
     def maybe_refresh_ahead
       return unless @client.respond_to?(:user_id) && @client.user_id
 
-      stamp = Rails.cache.read(fetched_at_key)
       return if stamp && Time.now - stamp[:at] < BACKGROUND_REFRESH_INTERVAL
       return unless Rails.cache.write(refresh_lock_key, true, expires_in: BACKGROUND_REFRESH_INTERVAL, unless_exist: true)
 

@@ -336,4 +336,63 @@ class Hcb::OrganizationTransactionsTest < ActiveSupport::TestCase
 
     assert_equal [ "txn_2", "txn_1" ], service.all.map { |t| t["id"] }
   end
+
+  test "a drain publishes the rendered rows and the ledger's display order alongside it" do
+    client = FakeHcbClient.new(transactions: [
+      { "id" => "txn_late", "date" => "2026-01-09", "memo" => "Sent early, settled late", "amount_cents" => -1_000,
+        "ach_transfer" => { "created_at" => "2026-01-02T10:00:00Z" } },
+      { "id" => "txn_declined", "date" => "2026-01-05", "memo" => "Declined", "amount_cents" => -7_500, "declined" => true },
+      { "id" => "txn_1", "date" => "2026-01-01", "memo" => "Donation", "amount_cents" => 5_000 }
+    ])
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+
+    service.all
+
+    row = JSON.parse(service.presented["txn_1"])
+    assert_equal Hcb::TransactionPresenter.new(client.transactions("org_1")["data"].last).as_json.as_json, row
+    # Declined transactions are part of this cache: the ledger view lists them,
+    # and a match can reference one.
+    assert_equal %w[txn_1 txn_declined txn_late], service.presented.keys.sort
+
+    order = service.ledger_order
+    # By the date the ledger displays -- when it was sent -- not HCB's settled
+    # date, which would have put txn_late last.
+    assert_equal %w[txn_1 txn_late txn_declined], order[:ids]
+    assert_equal [ 5_000, -1_000, -7_500 ], order[:amounts_cents]
+    assert_equal [ false, false, true ], order[:declined]
+  end
+
+  test "side caches answer from the process-local memo without re-reading the store" do
+    client = FakeHcbClient.new(transactions: [
+      { "id" => "txn_1", "date" => "2026-01-01", "memo" => "Donation", "amount_cents" => 5_000 }
+    ])
+    Hcb::OrganizationTransactions.new(client, "org_1").all
+
+    # Everything but the freshness stamp goes away, so anything still answered
+    # can only have come from the copy the drain left in this process.
+    Rails.cache.delete_matched(/transactions:v2(?!.*fetched)/)
+
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+    assert_equal "txn_1", service.find("txn_1")["id"]
+    assert_equal %w[txn_1], service.derived[:ids]
+    assert_equal %w[txn_1], service.presented.keys
+    assert_equal %w[txn_1], service.ledger_order[:ids]
+  end
+
+  test "a drain elsewhere invalidates this process's copy rather than being served stale" do
+    client = FakeHcbClient.new(transactions: [
+      { "id" => "txn_1", "date" => "2026-01-01", "memo" => "Donation", "amount_cents" => 5_000 }
+    ])
+    Hcb::OrganizationTransactions.new(client, "org_1").all
+
+    # Stands in for another process (a warming job, another web worker)
+    # publishing a fresh drain into the shared store.
+    client.add_transactions([ { "id" => "txn_2", "date" => "2026-01-02", "memo" => "Grant", "amount_cents" => -5_000 } ])
+    Hcb::OrganizationTransactions.new(client, "org_1").refresh!
+
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+    assert_equal %w[txn_2 txn_1], service.all.map { |t| t["id"] }
+    assert_equal %w[txn_1 txn_2], service.presented.keys.sort
+    assert_equal %w[txn_1 txn_2], service.ledger_order[:ids]
+  end
 end

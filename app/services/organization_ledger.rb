@@ -92,6 +92,29 @@ class OrganizationLedger
     transactions.drop(cutoff_index + 1)
   end
 
+  # Ids of #after_cutoff, in the same order, without building a presenter for
+  # every transaction in the org's history to get them -- the drain-time
+  # derived index already lists ids in exactly #transactions' order. Callers
+  # that only need to *name* the working set (Api::TransactionsController,
+  # which renders it from pre-serialized fragments) take this instead.
+  def after_cutoff_ids
+    order = derived_order
+    return after_cutoff.map(&:id) unless order
+    return order[:ids] if cutoff_index.nil?
+
+    order[:ids].drop(cutoff_index + 1)
+  end
+
+  # Response JSON for the given ids, one already-serialized fragment each, in
+  # the order asked for. Answered from the drain-time presentation cache where
+  # it can be -- an id that isn't part of the drain (a match leg from before
+  # the current history) still falls back to fetching and presenting it.
+  # Skips ids nothing can resolve, as #transaction_by_id does.
+  def transaction_fragments(ids)
+    presented = @hcb_transactions.presented
+    ids.filter_map { |id| presented&.[](id) || transaction_by_id(id)&.as_json&.to_json }
+  end
+
   # `remote: false` restricts the lookup to what this organization's drain
   # already knows, for callers that run on every request and would rather
   # answer "don't know" than pay a live HCB round trip per unknown id (see

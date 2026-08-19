@@ -121,4 +121,39 @@ class Api::LedgerControllerTest < ActionController::TestCase
     assert_not body["has_more"]
     assert_nil body["next_after"]
   end
+
+  test "index renders the same body from the drain's cached rows as it does building them inline" do
+    raw = [
+      { "id" => "txn_declined", "date" => "2026-01-06", "memo" => "Declined card", "amount_cents" => -7_500, "declined" => true },
+      { "id" => "txn_late", "date" => "2026-01-09", "memo" => "ACH sent early, settled late", "amount_cents" => -1_000,
+        "ach_transfer" => { "created_at" => "2026-01-02T10:00:00Z" } },
+      { "id" => "txn_1", "date" => "2026-01-01", "memo" => "Donation", "amount_cents" => 10_000 }
+    ]
+    fake_client = FakeHcbClient.new(transactions: raw)
+
+    # The test environment's :null_store drops every write, so this first pass
+    # is the cold path: nothing to read the rows back out of, so the controller
+    # presents and orders them itself.
+    Hcb::Client.stub :new, fake_client do
+      stub_membership("reader") { get :index, params: { organization_id: "org_1" } }
+    end
+    assert_response :success
+    inline = JSON.parse(response.body)
+
+    previous_cache = Rails.cache
+    Rails.cache = ActiveSupport::Cache::MemoryStore.new
+    begin
+      Hcb::Client.stub :new, FakeHcbClient.new(transactions: raw) do
+        stub_membership("reader") { get :index, params: { organization_id: "org_1" } }
+      end
+    ensure
+      Rails.cache = previous_cache
+    end
+    assert_response :success
+
+    assert_equal inline, JSON.parse(response.body)
+    assert_equal [ "txn_1", "txn_late", "txn_declined" ], inline["ledger"].map { |r| r["id"] }
+    assert_equal [ 100.0, 90.0, 90.0 ], inline["ledger"].map { |r| r["running_balance"] }
+    assert_equal 90.0, inline["final_balance"]
+  end
 end
