@@ -268,6 +268,7 @@ function clearLoadProgress() {
 }
 
 async function loadAll() {
+  logActivity("loading this organization's transactions and matches…");
   showListsMessage(LOADING_HTML);
   allTransactions = [];
   byId = new Map();
@@ -339,6 +340,7 @@ async function loadAll() {
   byId = new Map(allTransactions.map((t) => [t.id, t]));
   matches = matchData.matches;
   lastMatchChanges = matchData.match_changes || [];
+  logMatchChanges(lastMatchChanges);
   transactionsLoaded = true;
 
   zeroBalanceOptions = txData.zero_balance_options || [];
@@ -535,6 +537,7 @@ async function fullReloadTransactionsAndRender() {
         updateLoadProgress(totalCount);
         render();
       },
+
     });
     // Nothing was cleared and nothing is running: the request itself failed, so
     // the page is still showing the data it loaded with.
@@ -556,6 +559,35 @@ async function fullReloadTransactionsAndRender() {
     restreamingFullReload = false;
     transactionsRefreshing = false;
     setSyncButtonsDisabled(false);
+  }
+}
+
+// The same findings the sync note summarises, but itemised -- the note has room
+// for a count, and "which match, and what happened to it" is the part someone
+// actually has to act on.
+function logMatchChanges(changes) {
+  if (!changes.length) return;
+
+  for (const c of changes) {
+    if (c.kind === "amount") {
+      logActivity(`match #${c.id}: HCB restated a leg — now ${c.to === 0 ? "balanced" : `off by ${fmt(c.to)}`}`, "warn");
+    } else if (c.kind === "dropped") {
+      logActivity(
+        `match #${c.id}: removed ${c.transaction_ids.join(", ")} — HCB no longer has ${c.transaction_ids.length === 1 ? "it" : "them"}`
+        + (c.undone ? " — nothing left to pair, so the match was undone" : ` — now ${c.to === 0 ? "balanced" : `off by ${fmt(c.to)}`}`),
+        "warn",
+      );
+    } else if (c.kind === "restored") {
+      logActivity(
+        `match #${c.id}: ${c.transaction_ids.join(", ")} is back on HCB — leg restored, now ${c.to === 0 ? "balanced" : `off by ${fmt(c.to)}`}`,
+        "done",
+      );
+    } else if (c.kind === "unresolved") {
+      logActivity(
+        `match #${c.id}: ${c.transaction_ids.join(", ")} missing, left in place — too many went at once to trust the drain`,
+        "error",
+      );
+    }
   }
 }
 

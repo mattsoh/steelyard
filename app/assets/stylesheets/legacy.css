@@ -1460,3 +1460,92 @@ tr.zero-point { background: #fff8c5; }
   }
 }
 
+
+/* ── HCB activity log ──────────────────────────────────────────────────────
+   Both the matcher and the ledger wait on HCB for real amounts of time (a cold
+   load is a round trip per hundred transactions; a full reload re-walks the
+   whole history). This is where that becomes visible instead of being one
+   "loading…" and a spinner. Fixed to the corner so it never moves the tables
+   it's describing. */
+#activity-toggle {
+  position: fixed;
+  right: 12px;
+  bottom: 12px;
+  z-index: 40;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: #fff;
+  color: #656d76;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(31, 35, 40, 0.12);
+}
+
+#activity-toggle:hover { color: #1f2328; border-color: #8c959f; }
+
+#activity-panel {
+  position: fixed;
+  right: 12px;
+  bottom: 48px;
+  z-index: 41;
+  display: flex;
+  flex-direction: column;
+  width: min(440px, calc(100vw - 24px));
+  max-height: min(50vh, 420px);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 4px 16px rgba(31, 35, 40, 0.18);
+}
+
+#activity-panel.hidden { display: none; }
+
+.activity-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.activity-header-actions { display: flex; gap: 6px; }
+.activity-header-actions button { padding: 2px 8px; font-size: 11px; }
+
+#activity-body {
+  margin: 0;
+  padding: 6px 0;
+  overflow-y: auto;
+  list-style: none;
+  /* Timings and counts line up when they're monospaced, which is most of what
+     this log is. */
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.activity-line {
+  display: flex;
+  gap: 8px;
+  padding: 1px 10px;
+  color: #1f2328;
+  word-break: break-word;
+}
+
+/* Elapsed since the page loaded, not a wall clock: what matters in a log like
+   this is how long something took, not when it happened. */
+.activity-at {
+  flex: 0 0 3.5em;
+  color: #8c959f;
+  text-align: right;
+}
+
+.activity-hcb { color: var(--in-color); }
+.activity-warn { color: var(--amber); }
+.activity-error { color: var(--red); }
+.activity-done { color: var(--green); }

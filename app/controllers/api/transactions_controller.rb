@@ -54,7 +54,7 @@ class Api::TransactionsController < ApplicationController
     # so nothing is queued behind it and the caller just waits for that drain.
     WarmOrganizationTransactionsJob.perform_later(current_user.id, organization_id) if status == :deep
 
-    render json: { status: status, **transactions.sync_state }
+    render json: { status: status, hcb: hcb_client.stats, **transactions.sync_state }
   end
 
   # Re-checks ONE transaction against HCB, for the detail modal. #refresh only

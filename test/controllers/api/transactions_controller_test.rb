@@ -332,4 +332,21 @@ class Api::TransactionsControllerTest < ActionController::TestCase
     # confirmed against.
     assert_equal 12_500, match.discrepancy_cents
   end
+
+  test "a streamed page reports how much of it went to HCB" do
+    fake_client = FakeHcbClient.new(transactions: [ { "id" => "txn_1", "date" => "2026-01-01", "amount_cents" => 1 } ])
+
+    Hcb::Client.stub :new, fake_client do
+      stub_membership("reader") do
+        get :page, params: { organization_id: "org_1", stream_id: "s1" }
+      end
+    end
+
+    # The activity log reads this to say whether a slow load is us or HCB, which
+    # is guesswork from the outside otherwise.
+    hcb = JSON.parse(response.body)["hcb"]
+    assert_equal 1, hcb["requests"]
+    assert hcb.key?("ms")
+    assert hcb.key?("slowest_ms")
+  end
 end

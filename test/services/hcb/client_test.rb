@@ -63,4 +63,38 @@ class Hcb::ClientTest < ActiveSupport::TestCase
 
     assert_equal "/api/v4/organizations/hq-clearinghouse", token.requests.sole.first
   end
+
+  # The endpoints that report "was it us or HCB?" read this (see
+  # StreamedTransactionPages), so it has to count every call -- including the
+  # one that hung and then failed, which is the one worth having timed.
+  test "stats count every HCB call the client makes" do
+    client = client_with(RecordingAccessToken.new)
+
+    assert_equal 0, client.stats[:requests]
+
+    client.comments("txn_1")
+    client.transaction("txn_1")
+
+    assert_equal 2, client.stats[:requests]
+    assert_operator client.stats[:ms], :>=, 0
+  end
+
+  test "a call that raises is still counted" do
+    token = Object.new
+    token.define_singleton_method(:get) { |*, **| raise "HCB is down" }
+    client = client_with(token)
+
+    assert_raises(RuntimeError) { client.transaction("txn_1") }
+
+    assert_equal 1, client.stats[:requests]
+  end
+
+  test "stats are a copy, so a caller can't edit the client's own tally" do
+    client = client_with(RecordingAccessToken.new)
+    client.comments("txn_1")
+
+    client.stats[:requests] = 99
+
+    assert_equal 1, client.stats[:requests]
+  end
 end

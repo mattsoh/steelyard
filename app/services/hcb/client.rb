@@ -8,7 +8,21 @@ module Hcb
 
     def initialize(user)
       @user = user
+      @stats_mutex = Mutex.new
+      @stats = { requests: 0, ms: 0.0, slowest_ms: 0.0 }
     end
+
+    # What this client has spent talking to HCB, for the endpoints that report
+    # it back to the page (see StreamedTransactionPages). Steelyard's own work
+    # is mostly cache reads; when a request feels slow it's nearly always this,
+    # and the difference between "we're slow" and "HCB is slow" is the first
+    # thing anyone watching wants to know.
+    #
+    # Accumulated on the instance rather than in a per-request store because a
+    # redrain fans its pages out across threads (see
+    # OrganizationTransactions#parallel_pages) and they all share this client --
+    # so this counts their work too, where a thread-local wouldn't.
+    def stats = @stats_mutex.synchronize { @stats.dup }
 
     def user_id = @user.id
 
@@ -62,7 +76,7 @@ module Hcb
     def segment(value) = ERB::Util.url_encode(value.to_s)
 
     def get(path, **params)
-      response = access_token.get(path, params: params.compact)
+      response = timed { access_token.get(path, params: params.compact) }
       JSON.parse(response.body)
     rescue OAuth2::Error => e
       # 401 is an expired/revoked token; 403 from HCB's "restricted" tokens
@@ -72,6 +86,24 @@ module Hcb
       # again to pick up the current scope list.
       raise Hcb::TokenExpiredError, e.message if e.response.status.in?([ 401, 403 ])
       raise
+    end
+
+    # Records even when the call raises: a request that hung and then failed is
+    # exactly the one worth having timed.
+    def timed
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      yield
+    ensure
+      record_request(started)
+    end
+
+    def record_request(started)
+      elapsed = (Process.clock_gettime(Process::CLOCK_MONOTONIC) - started) * 1000
+      @stats_mutex.synchronize do
+        @stats[:requests] += 1
+        @stats[:ms] += elapsed
+        @stats[:slowest_ms] = elapsed if elapsed > @stats[:slowest_ms]
+      end
     end
 
     def access_token

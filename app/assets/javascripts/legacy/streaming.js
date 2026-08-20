@@ -85,20 +85,31 @@ function waitForReloadToLand() {
 
 async function syncNewTransactions({ onSyncing } = {}) {
   let started;
+  logActivity("asking HCB whether anything new has landed…");
   try {
     const res = await fetch(`${orgApiBase()}/api/transactions/refresh`, { method: "POST" });
-    if (!res.ok) return false;
+    if (!res.ok) {
+      logActivity(`the check failed (HTTP ${res.status})`, "error");
+      return false;
+    }
     started = await res.json();
   } catch {
+    logActivity("the check couldn't reach Steelyard", "error");
     return false;
   }
 
-  if (started.status === "fresh") return false;
+  logActivity(`HCB says: ${started.status}${activityHcbClause(started.hcb)}`, "hcb");
+
+  if (started.status === "fresh") {
+    logActivity("already up to date", "done");
+    return false;
+  }
 
   // A full reload is already rebuilding the whole history, which covers
   // everything this check would have asked for. Wait for it rather than
   // queueing anything behind it.
   if (started.status === "reloading") {
+    logActivity("a full reload is already rebuilding this organization — waiting for it", "warn");
     invalidateCachedTransactionRows();
     if (onSyncing) onSyncing();
     return waitForReloadToLand();
@@ -107,11 +118,15 @@ async function syncNewTransactions({ onSyncing } = {}) {
   // Anything other than "fresh" means the server's copy has moved on, so the
   // client-side row cache is stale too -- drop it before any reload reads it.
   invalidateCachedTransactionRows();
-  if (started.status === "synced") return true;
+  if (started.status === "synced") {
+    logActivity("new activity found and spliced into the cache", "done");
+    return true;
+  }
 
   // "deep": a background job is re-walking recent history. Poll the
   // cache-only status endpoint (which never touches HCB) until it publishes a
   // drain newer than the one we started from.
+  logActivity("more changed than one page explains — a background redrain is running", "warn");
   if (onSyncing) onSyncing();
   return waitForNewerDrain(started.fetched_at);
 }
@@ -146,11 +161,16 @@ async function syncNewTransactions({ onSyncing } = {}) {
 // still coming.
 async function fullReloadTransactions({ onSyncing, onPage } = {}) {
   let started;
+  logActivity("full reload requested — clearing this organization's cached history", "warn");
   try {
     const res = await fetch(`${orgApiBase()}/api/transactions/reload`, { method: "POST" });
-    if (!res.ok) return false;
+    if (!res.ok) {
+      logActivity(`the full reload wouldn't start (HTTP ${res.status})`, "error");
+      return false;
+    }
     started = await res.json();
   } catch {
+    logActivity("the full reload couldn't reach Steelyard", "error");
     return false;
   }
 
@@ -160,8 +180,16 @@ async function fullReloadTransactions({ onSyncing, onPage } = {}) {
   // "already_running": no stream_id, because the claim (and the walk) belongs
   // to whoever started it. Wait for the drain they're driving.
   if (!started.stream_id || !onPage) {
+    logActivity(
+      started.status === "already_running"
+        ? "somebody else is already reloading this organization — waiting for their drain"
+        : "waiting for the reload to land",
+      "warn",
+    );
     return waitForNewerDrain(started.fetched_at, FULL_RELOAD_POLL_TIMEOUT_MS);
   }
+
+  logActivity("re-reading the whole history from HCB, one page at a time…");
 
   try {
     await loadPagesStreaming(`${orgApiBase()}/api/transactions/page`, onPage, {
@@ -169,8 +197,12 @@ async function fullReloadTransactions({ onSyncing, onPage } = {}) {
       streamId: started.stream_id,
       useCache: false,
     });
+    logActivity("full reload complete", "done");
     return true;
   } catch {
+    // The drain doesn't stop when this tab does -- a job behind it finishes from
+    // the pages already fetched -- so this is a handover, not a failure.
+    logActivity("lost the reload stream — a background job is finishing it", "warn");
     return waitForNewerDrain(started.fetched_at, FULL_RELOAD_POLL_TIMEOUT_MS);
   }
 }
@@ -221,6 +253,7 @@ async function loadPagesStreaming(pageUrl, onPage, { params = {}, streamId, useC
   if (useCache) {
     const cached = readCachedTransactionRows();
     if (cached) {
+      logActivity(`${cached.rows.length} transactions from this browser's cache — no request needed`, "done");
       onPage(cached.rows, cached.totalCount);
       return;
     }
@@ -230,6 +263,8 @@ async function loadPagesStreaming(pageUrl, onPage, { params = {}, streamId, useC
   let after = null;
   let allRows = [];
   let totalCount;
+  let pageNumber = 1;
+  const streamStarted = Date.now();
 
   while (true) {
     const url = new URL(pageUrl, window.location.origin);
@@ -237,10 +272,24 @@ async function loadPagesStreaming(pageUrl, onPage, { params = {}, streamId, useC
     url.searchParams.set("stream_id", activeStreamId);
     for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
 
+    const pageStarted = Date.now();
     const res = await fetch(url);
-    if (!res.ok) throw new Error("bad response");
+    if (!res.ok) {
+      logActivity(`transactions page ${pageNumber} failed (HTTP ${res.status})`, "error");
+      throw new Error("bad response");
+    }
     const data = await res.json();
-    if (data.reloading) throw new ReloadInProgressError();
+    if (data.reloading) {
+      logActivity("a full reload owns this organization's history — waiting for it", "warn");
+      throw new ReloadInProgressError();
+    }
+
+    logActivity(
+      `page ${pageNumber}: ${data.rows.length} transactions in ${Date.now() - pageStarted}ms`
+      + activityCacheNote(data.hcb),
+      data.hcb && data.hcb.requests ? "hcb" : "info",
+    );
+    pageNumber += 1;
 
     allRows.push(...data.rows);
     totalCount = data.total_count;
@@ -249,6 +298,11 @@ async function loadPagesStreaming(pageUrl, onPage, { params = {}, streamId, useC
     if (!data.has_more) break;
     after = data.next_after;
   }
+
+  logActivity(
+    `all ${allRows.length} transactions loaded in ${((Date.now() - streamStarted) / 1000).toFixed(1)}s`,
+    "done",
+  );
 
   // Written once the drain is fully done, not per-page -- per-page would mean
   // JSON.stringify-ing the whole (ever-growing) row set on every round trip,

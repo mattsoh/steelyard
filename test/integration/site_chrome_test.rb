@@ -61,4 +61,24 @@ class LegacySiteChromeTest < ActionController::TestCase
     assert_select "link[rel='apple-touch-icon'][sizes='180x180']"
     assert_select "link[rel=manifest]"
   end
+
+  # Both legacy pages wait on HCB for real amounts of time, so both get the
+  # activity log -- which is why it lives in the shared layout rather than in
+  # each page. Same drift guard as the home button above.
+  test "the legacy layout renders the HCB activity log on every page that uses it" do
+    user = User.create!(hcb_user_id: "usr_chrome", access_token: "a", refresh_token: "b", token_expires_at: 1.hour.from_now)
+    session[:user_id] = user.id
+
+    stub_membership("member") { get :show, params: { organization_id: "org_1" } }
+
+    assert_response :success
+    assert_select "button#activity-toggle[aria-controls=?]", "activity-panel"
+    # role="log" rather than an aria-live region: a screen reader announcing
+    # every page of a hundred-page drain would be unusable.
+    assert_select "section#activity-panel.hidden[role=log]" do
+      assert_select "ul#activity-body"
+      assert_select "button#activity-copy"
+      assert_select "button#activity-close"
+    end
+  end
 end

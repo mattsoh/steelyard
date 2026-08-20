@@ -125,6 +125,7 @@ function memoOrCodeMatches(r, query) {
 }
 
 async function load() {
+  logActivity("loading this organization's ledger…");
   showLedgerMessage(LOADING_HTML);
   provisional = [];
   let lastTotalCount = null;
@@ -188,6 +189,7 @@ async function load() {
 
   applyMatches(matchData.matches);
   lastMatchChanges = matchData.match_changes || [];
+  logMatchChanges(lastMatchChanges);
 
   // Keep the zero-point row (as a reference) and everything after it,
   // then show newest first.
@@ -285,6 +287,28 @@ let transactionsRefreshing = false;
 // balancing, or lost a leg, is usually the very thing a sync or full reload was
 // reaching for.
 let lastMatchChanges = [];
+
+// Itemised into the activity log as well as counted in the sync note -- see the
+// matcher's copy for why. Kept in both rather than shared: the two pages format
+// money and name matches slightly differently, and the log reads better in each
+// page's own voice than in a lowest common denominator.
+function logMatchChanges(changes) {
+  for (const c of changes) {
+    if (c.kind === "dropped") {
+      logActivity(
+        `match #${c.id}: removed ${c.transaction_ids.join(", ")} — HCB no longer has ${c.transaction_ids.length === 1 ? "it" : "them"}`
+        + (c.undone ? " — nothing left to pair, so the match was undone" : ""),
+        "warn",
+      );
+    } else if (c.kind === "restored") {
+      logActivity(`match #${c.id}: ${c.transaction_ids.join(", ")} is back on HCB — leg restored`, "done");
+    } else if (c.kind === "unresolved") {
+      logActivity(`match #${c.id}: ${c.transaction_ids.join(", ")} missing, left in place`, "error");
+    } else {
+      logActivity(`match #${c.id}: HCB restated a leg — discrepancy re-derived`, "warn");
+    }
+  }
+}
 
 function matchChangeNote() {
   if (!lastMatchChanges.length) return "";

@@ -29,6 +29,11 @@ module StreamedTransactionPages
       has_more: result[:has_more],
       next_after: result[:next_after],
       total_count: result[:total_count],
+      # What this page actually cost, and how much of it was HCB. The page's
+      # activity log reads this to say whether a slow load is us or them, which
+      # is otherwise pure guesswork from the outside -- a warm page is a couple
+      # of cache reads, a cold one is a round trip to HCB per hundred rows.
+      hcb: hcb_client.stats,
       # Passed through, not dropped: an empty page during a full reload means
       # "wait for the drain that's rebuilding this" rather than "there are no
       # transactions", and the client can only tell the two apart from this.

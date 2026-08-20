@@ -24,7 +24,28 @@
 
 <%= yield %>
 
-<%= javascript_include_tag "legacy/hcb_csrf_shim", "legacy/details", "legacy/match_detail", "legacy/streaming", "legacy/csv" %>
+<%# What the page is doing with HCB, on both the matcher and the ledger -- both
+    spend real time waiting on it, and a drain that takes minutes used to be
+    indistinguishable from one that had stalled. Rendered here rather than per
+    page so the two can't drift apart. %>
+<button type="button" id="activity-toggle" aria-expanded="false" aria-controls="activity-panel"
+        title="What this page is doing with HCB — requests, timings, and whether HCB is the slow part">☰ Activity</button>
+
+<%# role="log" rather than an aria-live region: a screen reader announcing every
+    page of a hundred-page drain would be unusable. This way it's readable on
+    purpose, not read out by default. %>
+<section id="activity-panel" class="hidden" role="log" aria-label="HCB activity log">
+  <header class="activity-header">
+    <span>HCB activity</span>
+    <span class="activity-header-actions">
+      <button type="button" id="activity-copy" class="secondary">Copy</button>
+      <button type="button" id="activity-close" class="secondary" aria-label="Close activity log">✕</button>
+    </span>
+  </header>
+  <ul id="activity-body"></ul>
+</section>
+
+<%= javascript_include_tag "legacy/hcb_csrf_shim", "legacy/details", "legacy/activity", "legacy/match_detail", "legacy/streaming", "legacy/csv" %>
 <%= yield :page_scripts %>
 </body>
 </html>

@@ -230,6 +230,10 @@ async function refreshDetailTransaction() {
   }
 
   const matchesChanged = data.match_changes || [];
+  logActivity(
+    `re-checked ${t.id} against HCB — ${matchesChanged.length ? `${matchesChanged.length} match(es) affected` : "no matches affected"}`,
+    "hcb",
+  );
 
   // Hand the fresh values to whichever page is hosting the modal, so the row
   // behind it (and any total computed from it) stops showing the stale amount.

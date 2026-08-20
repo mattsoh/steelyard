@@ -26,6 +26,11 @@ class FakeHcbClient
   end
 
   def user = @user
+
+  # Stands in for Hcb::Client#stats, which the endpoints that report how much of
+  # a request went to HCB read (see StreamedTransactionPages). Nothing here
+  # touches the network, so the timings are zero -- the shape is what matters.
+  def stats = { requests: @transactions_calls, ms: 0.0, slowest_ms: 0.0 }
   def organizations = { "data" => @organizations }
 
   # Prepends newly-"arrived" transactions (newest-first, matching HCB's own
