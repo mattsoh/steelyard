@@ -108,6 +108,28 @@ module Hcb
     def amount = (amount_cents / 100.0).round(2)
     def direction = amount.negative? ? "out" : "in"
     def pending? = !!@raw["pending"]
+
+    # Money that hasn't arrived and doesn't count yet.
+    #
+    # HCB's own balance (Event#balance_v2_cents) is settled + pending
+    # *outgoing*: a pending charge is already spoken for, so it reduces what you
+    # have, while a pending deposit isn't yours until it settles. Everything
+    # here follows that -- these transactions are left out of the balance, the
+    # ledger, the matcher's working set and the cutoff options, and reappear on
+    # their own when HCB settles them.
+    #
+    # HCB also counts *fronted* incoming pending transactions, and the API
+    # spares us having to know which those are: its `pending` flag is already
+    # `!fronted? && unsettled?`, so a fronted transaction arrives here as not
+    # pending and is counted like a settled one.
+    def pending_incoming? = self.class.pending_incoming?(@raw)
+
+    # The same test against a raw drained hash, for the drain-time side caches
+    # that work on those rather than on presenters (see
+    # OrganizationTransactions#write_side_caches).
+    def self.pending_incoming?(raw)
+      !!raw["pending"] && !(raw["amount_cents"] || 0).negative?
+    end
     def declined? = !!@raw["declined"]
     def reversed? = !!@raw["reversed"]
     def missing_receipt? = !!@raw["missing_receipt"]

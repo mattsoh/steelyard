@@ -45,6 +45,11 @@ module PublicApi
       {
         organization: organization_json(org),
         cutoff: { date: cutoff&.date, transaction_id: cutoff&.transaction_id },
+        # The organization's balance, worked out the way HCB works out its own
+        # (see OrganizationLedger#balance_cents): everything settled, plus
+        # pending outgoing. Reported so this can be read against HCB directly --
+        # if the two disagree, the drain is stale and a reload is the answer.
+        balance: money(org.ledger.balance_cents),
         unmatched: {
           incoming_count: incoming.size,
           outgoing_count: outgoing.size,

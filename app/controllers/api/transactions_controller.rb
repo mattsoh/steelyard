@@ -25,6 +25,9 @@ class Api::TransactionsController < ApplicationController
       # An organization mid-full-reload has no drain to answer from, so this
       # would otherwise be indistinguishable from one with no transactions.
       reloading: ledger.reloading?.to_json,
+      # The whole organization's balance, not the working set's -- the header
+      # shows it so it can be read against HCB's own figure.
+      balance: (ledger.balance_cents / 100.0).round(2).to_json,
       transactions: "[#{ledger.transaction_fragments(ids).join(',')}]"
     )
   end

@@ -349,4 +349,43 @@ class Api::TransactionsControllerTest < ActionController::TestCase
     assert hcb.key?("ms")
     assert hcb.key?("slowest_ms")
   end
+
+  test "index reports the organization's balance the way HCB works it out" do
+    fake_client = FakeHcbClient.new(transactions: [
+      { "id" => "txn_pending_in", "date" => "2026-03-01", "amount_cents" => 50_000, "pending" => true },
+      { "id" => "txn_pending_out", "date" => "2026-02-01", "amount_cents" => -2_500, "pending" => true },
+      { "id" => "txn_settled_in", "date" => "2026-01-01", "amount_cents" => 10_000 }
+    ])
+
+    Hcb::Client.stub :new, fake_client do
+      stub_membership("reader") { get :index, params: { organization_id: "org_1" } }
+    end
+
+    body = JSON.parse(response.body)
+    # Settled plus pending outgoing; the pending deposit isn't counted.
+    assert_equal 75.0, body["balance"]
+    # And it's kept off the working set too, so nobody tries to reconcile money
+    # that hasn't arrived.
+    assert_not_includes body["transactions"].map { |t| t["id"] }, "txn_pending_in"
+    assert_includes body["transactions"].map { |t| t["id"] }, "txn_pending_out"
+  end
+
+  test "a pending incoming transaction is never streamed into the ledger's order" do
+    fake_client = FakeHcbClient.new(transactions: [
+      { "id" => "txn_pending_in", "date" => "2026-03-01", "amount_cents" => 50_000, "pending" => true },
+      { "id" => "txn_settled_in", "date" => "2026-01-01", "amount_cents" => 10_000 }
+    ])
+
+    Hcb::Client.stub :new, fake_client do
+      stub_membership("reader") do
+        get :index, params: { organization_id: "org_1" } # warms the side caches
+        get :index, params: { organization_id: "org_1" }
+      end
+    end
+
+    ledger = Hcb::OrganizationTransactions.new(fake_client, "org_1")
+    assert_equal [ "txn_settled_in" ], ledger.ledger_order[:ids]
+    # Still presentable, because a match leg can point at it.
+    assert ledger.presented["txn_pending_in"]
+  end
 end

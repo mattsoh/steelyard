@@ -156,4 +156,27 @@ class Api::LedgerControllerTest < ActionController::TestCase
     assert_equal [ 100.0, 90.0, 90.0 ], inline["ledger"].map { |r| r["running_balance"] }
     assert_equal 90.0, inline["final_balance"]
   end
+
+  # The ledger totals its own rows while the matcher header reads
+  # OrganizationLedger#balance_cents. Two paths to one number, so this pins them
+  # together -- and pins both to the way HCB works its balance out.
+  test "the ledger's final balance is the same figure the matcher header shows" do
+    fake_client = FakeHcbClient.new(transactions: [
+      { "id" => "txn_pending_in", "date" => "2026-03-01", "amount_cents" => 50_000, "pending" => true },
+      { "id" => "txn_pending_out", "date" => "2026-02-01", "amount_cents" => -2_500, "pending" => true },
+      { "id" => "txn_declined", "date" => "2026-01-03", "amount_cents" => -9_900, "declined" => true },
+      { "id" => "txn_settled_in", "date" => "2026-01-01", "amount_cents" => 10_000 }
+    ])
+
+    Hcb::Client.stub :new, fake_client do
+      stub_membership("reader") { get :index, params: { organization_id: "org_1" } }
+    end
+
+    assert_response :success
+    assert_equal 75.0, JSON.parse(response.body)["final_balance"]
+    assert_equal 7_500, OrganizationLedger.new(fake_client, "org_1").balance_cents
+
+    # The pending deposit isn't a row on the ledger either.
+    assert_not_includes JSON.parse(response.body)["ledger"].map { |r| r["id"] }, "txn_pending_in"
+  end
 end

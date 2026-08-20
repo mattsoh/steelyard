@@ -42,6 +42,14 @@
       <span class="label">&nbsp;</span>
       <span class="value"><%= link_to "Change organization", organizations_path, class: "nav-link" %></span>
     </div>
+    <%# The organization's balance as HCB reckons it: everything settled, plus
+        pending outgoing, with pending incoming left out until it lands (see
+        OrganizationLedger#balance_cents). Whole history, not the working set --
+        it should read the same as the balance on HCB itself. %>
+    <div class="stat">
+      <span class="label">Balance</span>
+      <span class="value" id="stat-balance" title="This organization's balance on HCB: everything settled, plus pending outgoing. Pending incoming money isn't counted until it settles — the same way HCB works it out.">—</span>
+    </div>
     <div class="stat">
       <span class="label">Unmatched incoming</span>
       <span class="value" id="stat-in-count">—</span>

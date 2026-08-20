@@ -285,4 +285,18 @@ class McpTest < ActionDispatch::IntegrationTest
       assert_equal 0, tool_payload(call_tool("get_reconciliation_summary", { "organization_id" => "org_1" }))["matches"]["unresolved"]
     end
   end
+
+  test "the reconciliation summary reports the balance HCB would report" do
+    @client.add_transactions([
+      { "id" => "txn_pending_in", "date" => "2026-03-01", "memo" => "Incoming donation", "amount_cents" => 50_000, "pending" => true },
+      { "id" => "txn_pending_out", "date" => "2026-02-01", "memo" => "Card hold", "amount_cents" => -2_500, "pending" => true }
+    ])
+
+    with_hcb("reader") do
+      summary = tool_payload(call_tool("get_reconciliation_summary", { "organization_id" => "org_1" }))
+      # Settled 10_000 - 10_000, plus the pending charge; the pending deposit
+      # isn't counted until it lands, same as HCB's own figure.
+      assert_equal(-25.0, summary["balance"])
+    end
+  end
 end

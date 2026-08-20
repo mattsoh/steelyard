@@ -78,4 +78,15 @@ class MatcherControllerTest < ActionController::TestCase
     get :show, params: { organization_id: "org_1" }
     assert_redirected_to root_path
   end
+
+  test "the header has a slot for the organization's balance" do
+    Hcb::Client.stub :new, FakeHcbClient.new(transactions: []) do
+      stub_membership("member") { get :show, params: { organization_id: "org_1" } }
+    end
+
+    assert_response :success
+    # Filled in by app.js from /api/transactions, so it starts as an em dash
+    # rather than a confident zero for an organization nothing is known about.
+    assert_select "#stat-balance", text: "—"
+  end
 end

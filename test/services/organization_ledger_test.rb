@@ -125,6 +125,54 @@ class OrganizationLedgerTest < ActiveSupport::TestCase
     end
   end
 
+  test "a pending incoming transaction is left out of the balance until it settles" do
+    with_memory_cache do
+      client = FakeHcbClient.new(transactions: [
+        { "id" => "txn_pending_in", "date" => "2026-03-01", "amount_cents" => 50_000, "pending" => true },
+        { "id" => "txn_pending_out", "date" => "2026-02-01", "amount_cents" => -2_500, "pending" => true },
+        { "id" => "txn_settled_out", "date" => "2026-01-02", "amount_cents" => -1_000 },
+        { "id" => "txn_settled_in", "date" => "2026-01-01", "amount_cents" => 10_000 }
+      ])
+      ledger = OrganizationLedger.new(client, "org_bal")
+
+      # HCB's own figure (Event#balance_v2_cents): settled both ways, plus
+      # pending outgoing, and not the pending deposit -- that money isn't there
+      # yet. 10_000 - 1_000 - 2_500.
+      assert_equal 6_500, ledger.balance_cents
+      assert_not_includes ledger.transactions.map(&:id), "txn_pending_in"
+      assert_includes ledger.transactions.map(&:id), "txn_pending_out"
+    end
+  end
+
+  test "a declined transaction still doesn't count toward the balance" do
+    with_memory_cache do
+      client = FakeHcbClient.new(transactions: [
+        { "id" => "txn_declined", "date" => "2026-01-03", "amount_cents" => -9_900, "declined" => true },
+        { "id" => "txn_settled_in", "date" => "2026-01-01", "amount_cents" => 10_000 }
+      ])
+
+      assert_equal 10_000, OrganizationLedger.new(client, "org_bal2").balance_cents
+    end
+  end
+
+  test "a pending incoming transaction is still resolvable by id, so a match on one keeps its leg" do
+    with_memory_cache do
+      client = FakeHcbClient.new(transactions: [
+        { "id" => "txn_pending_in", "date" => "2026-03-01", "amount_cents" => 50_000, "pending" => true },
+        { "id" => "txn_settled_out", "date" => "2026-01-02", "amount_cents" => -1_000 }
+      ])
+      ledger = OrganizationLedger.new(client, "org_bal3")
+      ledger.balance_cents # warms the drain and its side caches
+
+      # Filtering it out of the balance and the lists must not make it look gone:
+      # Matches::Resync drops legs it can't resolve, and a display rule is no
+      # reason to edit somebody's match.
+      found = ledger.transaction_by_id("txn_pending_in", remote: false)
+      assert found
+      assert_equal 50_000, found.amount_cents
+    end
+  end
+
   test "bumping the generation orphans the long-lived per-id transaction cache" do
     with_memory_cache do
       ledger = foreign_ledger

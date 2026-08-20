@@ -574,7 +574,18 @@ module Hcb
 
       write_presentation_caches(result, token)
 
-      ordered = result.reject { |t| t["declined"] }.reverse
+      # Declined never moved money; a pending *incoming* transaction hasn't
+      # moved yet and doesn't count until it settles (see
+      # TransactionPresenter#pending_incoming?, and HCB's own
+      # Event#balance_v2_cents). Neither belongs in the running balance, the
+      # cutoff options derived from it, or the matcher's working set.
+      #
+      # Deliberately not applied to the by-id index or amounts below: those have
+      # to answer for every drained id, because a match leg on a transaction
+      # that has since gone pending must still resolve. A leg that stopped
+      # resolving is one Matches::Resync drops from its match, and a display
+      # rule is no reason to do that.
+      ordered = result.reject { |t| t["declined"] || TransactionPresenter.pending_incoming?(t) }.reverse
       position_by_id = {}
       ids = Array.new(ordered.size)
       dates = Array.new(ordered.size)
@@ -628,7 +639,11 @@ module Hcb
       # Sorted exactly as Api::LedgerController#index sorted it inline: by the
       # date the row displays (when it was sent), id breaking ties so the order
       # is stable across drains.
-      ordered = presenters.sort_by { |p| [ p.date.to_s, p.id.to_s ] }
+      #
+      # Pending incoming transactions are left out of the order (and so off the
+      # ledger) but stay in `presented` above, which still has to answer for
+      # every drained id -- a match leg pointing at one is rendered from there.
+      ordered = presenters.reject(&:pending_incoming?).sort_by { |p| [ p.date.to_s, p.id.to_s ] }
       ledger_order = {
         ids: ordered.map(&:id),
         amounts_cents: ordered.map(&:amount_cents),

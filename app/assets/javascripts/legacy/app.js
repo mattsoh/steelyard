@@ -40,6 +40,9 @@ let restreamingFullReload = false;
 // balancing, or lost a leg, is usually the very thing a sync or full reload was
 // reaching for.
 let lastMatchChanges = [];
+// The organization's balance as HCB reckons it (settled + pending outgoing),
+// straight off /api/transactions. null until a load has reported one.
+let orgBalance = null;
 // The tray snapshot that full reload parked, held here (rather than read back
 // out of localStorage) so an in-progress match survives the re-stream even if
 // the re-stream itself fails and the page carries on without one.
@@ -343,6 +346,7 @@ async function loadAll() {
   logMatchChanges(lastMatchChanges);
   transactionsLoaded = true;
 
+  orgBalance = typeof txData.balance === "number" ? txData.balance : null;
   zeroBalanceOptions = txData.zero_balance_options || [];
   zeroBalanceSelectedId = txData.zero_balance_selected_id || null;
   renderCutoffSelect();
@@ -399,6 +403,7 @@ async function reloadInPlace() {
     };
   }
 
+  orgBalance = typeof txData.balance === "number" ? txData.balance : null;
   zeroBalanceOptions = txData.zero_balance_options || [];
   zeroBalanceSelectedId = txData.zero_balance_selected_id || null;
   renderCutoffSelect();
@@ -652,6 +657,13 @@ function renderStats() {
   document.getElementById("stat-in-sum").textContent = fmt(inSum);
   document.getElementById("stat-out-sum").textContent = fmt(outSum);
   document.getElementById("stat-net").textContent = fmt(inSum + outSum);
+  // Whole-organization, not the working set, and it comes from the server
+  // rather than being summed from the rows on the page -- those are filtered to
+  // the cutoff, so adding them up would answer a different question. Left as
+  // "—" until a load has told us, so it never shows a confident zero for an
+  // organization it just hasn't heard about yet.
+  document.getElementById("stat-balance").textContent =
+    orgBalance === null ? "—" : fmt(orgBalance);
 }
 
 // A plain monochrome outline (not an emoji) so "clear all" renders as a

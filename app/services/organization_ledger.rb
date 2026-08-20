@@ -90,8 +90,17 @@ class OrganizationLedger
   def transactions
     @transactions ||= @hcb_transactions.all
       .map { |t| Hcb::TransactionPresenter.new(t) }
-      .reject(&:declined?)
+      .reject { |t| t.declined? || t.pending_incoming? }
       .reverse
+  end
+
+  # The organization's balance, worked out the way HCB works out its own
+  # (Event#balance_v2_cents): everything settled, plus pending outgoing, with
+  # pending incoming left out until it lands. #transactions is already filtered
+  # to exactly that set, so this is the running balance's last value -- read off
+  # the drain-time index where it's there rather than re-summing the history.
+  def balance_cents
+    derived_order&.fetch(:balances_cents)&.last || transactions.sum(&:amount_cents)
   end
 
   # Balance in cents after each transaction, aligned with #transactions.

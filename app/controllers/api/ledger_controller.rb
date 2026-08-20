@@ -74,8 +74,13 @@ class Api::LedgerController < ApplicationController
     presented = nil unless presented && order[:ids].all? { |id| presented.key?(id) }
 
     unless presented
+      # Same filter the cached order is built with (see
+      # OrganizationTransactions#write_presentation_caches): pending incoming
+      # money isn't counted until it settles. Without it here, a cold cache
+      # showed a different ledger -- and a different balance -- from a warm one.
       sorted = transactions.all
         .map { |t| Hcb::TransactionPresenter.new(t) }
+        .reject(&:pending_incoming?)
         .sort_by { |p| [ p.date.to_s, p.id.to_s ] }
       presented = sorted.to_h { |p| [ p.id, p.as_json.to_json ] }
       order = { ids: sorted.map(&:id), amounts_cents: sorted.map(&:amount_cents), declined: sorted.map(&:declined?) }
