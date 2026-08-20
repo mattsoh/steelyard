@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_08_17_000001) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_20_120000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -44,12 +44,13 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_17_000001) do
   create_table "match_transactions", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.integer "direction", default: 0, null: false
+    t.datetime "dropped_at"
     t.string "hcb_organization_id", null: false
     t.string "hcb_transaction_id", null: false
     t.bigint "match_id", null: false
     t.datetime "undone_at"
     t.datetime "updated_at", null: false
-    t.index ["hcb_organization_id", "hcb_transaction_id"], name: "index_match_transactions_on_active_txn_per_org", unique: true, where: "(undone_at IS NULL)"
+    t.index ["hcb_organization_id", "hcb_transaction_id"], name: "index_match_transactions_on_active_txn_per_org", unique: true, where: "((undone_at IS NULL) AND (dropped_at IS NULL))"
     t.index ["match_id"], name: "index_match_transactions_on_match_id"
   end
 
@@ -60,8 +61,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_17_000001) do
     t.string "hcb_organization_id", null: false
     t.datetime "hidden_at"
     t.bigint "hidden_by_user_id"
-    t.datetime "last_edited_at"
-    t.bigint "last_edited_by_user_id"
     t.integer "legacy_id"
     t.text "note"
     t.datetime "undone_at"
@@ -143,7 +142,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_17_000001) do
   add_foreign_key "match_adjustments", "users", column: "created_by_user_id"
   add_foreign_key "match_transactions", "matches"
   add_foreign_key "matches", "users", column: "created_by_user_id"
-  add_foreign_key "matches", "users", column: "last_edited_by_user_id"
   add_foreign_key "matches", "users", column: "undone_by_user_id"
   add_foreign_key "oauth_authorization_codes", "oauth_clients"
   add_foreign_key "oauth_authorization_codes", "users"

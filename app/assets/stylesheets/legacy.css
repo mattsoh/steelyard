@@ -639,6 +639,26 @@ button.danger {
   white-space: nowrap;
 }
 
+/* A match with a leg HCB no longer accounts for. Red rather than the grey of
+   .hidden-badge: hidden is a display choice someone made, this is the match
+   quietly having stopped meaning what it says. */
+.missing-leg-badge {
+  display: inline-block;
+  border: 0;
+  font-family: inherit;
+  margin-top: 4px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: var(--red);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.missing-leg-badge:hover { filter: brightness(1.15); }
+
 .discrepancy-ok { color: var(--green); font-weight: 600; }
 .discrepancy-bad { color: var(--red); font-weight: 700; }
 
@@ -1009,7 +1029,11 @@ button.danger {
   overflow-wrap: anywhere;
 }
 .match-change-sign { display: inline-block; width: 12px; font-weight: 700; }
-.match-change-added > .match-change-sign { color: var(--green); }
+.match-change-added > .match-change-sign,
+/* A leg that went and came back (a transaction remapped away from the
+   organization on HCB, then back) -- an addition as far as the match is
+   concerned. */
+.match-change-restored > .match-change-sign { color: var(--green); }
 .match-change-removed > .match-change-sign { color: var(--red); }
 
 /* The base `main` rule sets up a 5-column grid sized for the matcher page's

@@ -42,7 +42,12 @@ class Match < ApplicationRecord
 
   private
 
+  # A dropped leg is excluded whatever `include_undone` says: it isn't part of
+  # what this match pairs any more (HCB stopped accounting for the transaction),
+  # which is a different thing from the match itself having been undone.
   def leg_ids(direction, include_undone)
-    match_transactions.select { |mt| (include_undone || mt.undone_at.nil?) && mt.public_send(direction) }.map(&:hcb_transaction_id)
+    match_transactions
+      .select { |mt| mt.dropped_at.nil? && (include_undone || mt.undone_at.nil?) && mt.public_send(direction) }
+      .map(&:hcb_transaction_id)
   end
 end

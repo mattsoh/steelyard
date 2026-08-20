@@ -37,7 +37,9 @@ module PublicApi
       org = scope_for(organization_id)
       unmatched = unmatched_transactions(org)
       incoming, outgoing = unmatched.partition { |t| !t.amount_cents.negative? }
-      balanced, unbalanced = resynced_matches(org).partition { |m| m.discrepancy_cents.zero? }
+      records = resynced_matches(org)
+      balanced, unbalanced = records.partition { |m| m.discrepancy_cents.zero? }
+      matches_with_unresolved_legs = records.select { |m| unresolved_leg_ids(org, m).any? }
       cutoff = org.ledger.effective_cutoff
 
       {
@@ -55,7 +57,12 @@ module PublicApi
         matches: {
           balanced: balanced.size,
           unbalanced: unbalanced.size,
-          total_discrepancy: money(unbalanced.sum(&:discrepancy_cents))
+          total_discrepancy: money(unbalanced.sum(&:discrepancy_cents)),
+          # Counted separately rather than folded into the split above, because
+          # these are the ones whose figures can't be trusted either way: a leg
+          # HCB no longer has means the discrepancy couldn't be re-derived, so
+          # whichever side it landed on is a stale claim.
+          unresolved: matches_with_unresolved_legs.size
         }
       }
     end
@@ -269,6 +276,12 @@ module PublicApi
         organization_id: org.organization_id,
         discrepancy: money(match.discrepancy_cents),
         balanced: match.discrepancy_cents.zero?,
+        # Legs that are no longer part of the organization's history on HCB.
+        # When this isn't empty the discrepancy above (and so `balanced`) is the
+        # last figure that could be worked out, not a current one -- the sum
+        # can't be re-derived while a leg is missing, and guessing it from the
+        # legs that remain would present a fiction as freshly confirmed.
+        unresolved_ids: unresolved_leg_ids(org, match),
         undone: match.undone?,
         # Somebody decided this one doesn't need looking at again -- usually a
         # discrepancy that's a bug rather than missing money. It still counts
@@ -323,8 +336,31 @@ module PublicApi
       # discrepancy -- and the balanced/unbalanced split derived from it -- is
       # re-derived from current amounts before anything is reported. Mutates the
       # records in place, so the values serialized below are the fresh ones.
-      Matches::Resync.new(ledger: org.ledger, matches: records).call
-      records
+      resync = Matches::Resync.new(ledger: org.ledger, matches: records).call
+
+      # Legs HCB no longer accounts for that were deliberately left in place
+      # (see Matches::Resync#safe_to_prune?). Those matches keep whatever
+      # discrepancy they were last able to compute, so `balanced: true` on one
+      # of them is a stale claim rather than a current fact -- remembered per
+      # organization so everything serialized below can say so.
+      @unresolved_leg_ids ||= {}
+      @unresolved_leg_ids[org.organization_id] = resync.unresolved.to_h { |u| [ u.match.id, u.transaction_ids ] }
+
+      # A prune destroys leg rows and can undo a match outright, neither of
+      # which the already-loaded records know about -- serializing them would
+      # report legs that have just been removed. Re-read instead.
+      return records if resync.dropped.empty?
+
+      Match.active.for_organization(org.organization_id)
+        .includes(:created_by, :match_transactions, :adjustments).order(:id).to_a
+    end
+
+    # Legs of this match HCB no longer accounts for, as of the last resync for
+    # its organization. Empty unless #resynced_matches has run for that
+    # organization on this instance -- every path that serializes a match goes
+    # through it.
+    def unresolved_leg_ids(org, match)
+      @unresolved_leg_ids&.dig(org.organization_id, match.id) || []
     end
 
     def unmatched_transactions(org)

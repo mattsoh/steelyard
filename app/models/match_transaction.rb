@@ -7,5 +7,14 @@ class MatchTransaction < ApplicationRecord
 
   validates :hcb_organization_id, :hcb_transaction_id, presence: true
 
-  scope :active, -> { where(undone_at: nil) }
+  # A live leg: one the match currently pairs. `undone_at` is the whole match
+  # having been undone; `dropped_at` is this leg alone having stopped being part
+  # of it, because HCB no longer accounts for the transaction (see
+  # Matches::Resync). A dropped leg is kept rather than deleted so the same
+  # transaction coming back can put it straight back in the match.
+  scope :active, -> { where(undone_at: nil, dropped_at: nil) }
+  scope :dropped, -> { where(undone_at: nil).where.not(dropped_at: nil) }
+
+  def dropped? = dropped_at.present?
+  def live? = undone_at.nil? && dropped_at.nil?
 end

@@ -1,7 +1,7 @@
 class Api::MatchesController < ApplicationController
   include OrganizationScoped
 
-  before_action :require_matcher_role!, only: [ :create, :update, :destroy ]
+  before_action :require_matcher_role!, only: [ :create, :update, :destroy, :prune ]
 
   def index
     ledger = OrganizationLedger.new(hcb_client, organization_id)
@@ -14,20 +14,50 @@ class Api::MatchesController < ApplicationController
     # serializing. This is the check that covers a plain page load and the
     # reload that follows a sync; the single-transaction refresh runs its own.
     #
-    # What it moved is reported alongside the matches, not just written. A full
-    # reload exists precisely because someone suspects an older transaction
-    # changed, and a match that quietly stopped balancing is the answer they
-    # were looking for -- so it says which ones rather than leaving the numbers
-    # to shift unannounced. Same shape as the single-transaction refresh's
-    # matches_changed (Api::TransactionsController#refresh_one), in dollars.
-    resynced = Matches::Resync.new(ledger: ledger, matches: matches).call
-      .map { |change| { id: change.match.id, from: change.from_cents / 100.0, to: change.to_cents / 100.0 } }
+    # What it changed is reported alongside the matches, not just written. A
+    # full reload exists precisely because someone suspects an older transaction
+    # changed, and a match that quietly stopped balancing -- or lost a leg
+    # entirely -- is the answer they were looking for. `match_changes` is the
+    # one shape every surface reports that in; see Matches::Resync::Result.
+    resync = Matches::Resync.new(ledger: ledger, matches: matches).call
+    unresolved_ids = resync.unresolved_ids_by_match
+
+    # A prune destroys leg rows and can undo a match outright, neither of which
+    # the already-loaded records know about -- serializing them would report
+    # legs that were just removed. Re-read instead.
+    matches = matches.reload if resync.dropped.any?
 
     # One query for the whole page (see Matches::History.for_matches), which is
     # what lets every row say who last touched it without a query per row.
     histories = Matches::History.for_matches(matches)
 
-    render json: { matches: matches.map { |m| serialize(m, ledger, history: histories[m.id]) }, resynced: resynced }
+    render json: {
+      matches: matches.map { |m| serialize(m, ledger, history: histories[m.id], unresolved_ids: unresolved_ids[m.id]) },
+      match_changes: resync.match_changes
+    }
+  end
+
+  # Applies the leg drops #index declined to, when the safety valve tripped.
+  #
+  # A resync won't drop legs en masse on its own (see
+  # Matches::Resync#safe_to_prune?): a drain that came back short looks exactly
+  # like HCB having lost hundreds of transactions, and the destructive reading
+  # of that is the wrong one to guess at. But when it really has happened, the
+  # matches would otherwise stay flagged forever with no way to act on them --
+  # so this is the "yes, I looked, apply it" button. Matcher role, because it
+  # edits confirmed matches.
+  def prune
+    ledger = OrganizationLedger.new(hcb_client, organization_id)
+    matches = Match.active.for_organization(organization_id)
+      .includes(:created_by, :hidden_by, :match_transactions, :adjustments).order(:id)
+    # Scoped to one match when the caller names it -- which is how the matcher
+    # asks, from the flag on the row itself. Forcing the whole organization at
+    # once is available but is not what a person clicking one badge meant.
+    matches = matches.where(id: params[:id]) if params[:id].present?
+
+    resync = Matches::Resync.new(ledger: ledger, matches: matches, force_prune: true).call
+
+    render json: { match_changes: resync.match_changes }
   end
 
   # Everything about one match, for the detail popup: its legs as full
@@ -146,7 +176,7 @@ class Api::MatchesController < ApplicationController
 
   private
 
-  def serialize(m, ledger, history: nil)
+  def serialize(m, ledger, history: nil, unresolved_ids: nil)
     incoming_ids = m.incoming_transaction_ids
     outgoing_ids = m.outgoing_transaction_ids
     {
@@ -165,6 +195,11 @@ class Api::MatchesController < ApplicationController
       hidden: m.hidden?,
       hidden_at: m.hidden_at&.iso8601,
       hidden_by_name: m.hidden_by && display_name(m.hidden_by),
+      # Legs that don't resolve and were left in place (see
+      # Matches::Resync#safe_to_prune?). Always present so the frontend can flag
+      # the row without cross-referencing match_changes, and so the flag survives
+      # re-renders after the sync note has gone.
+      unresolved_ids: unresolved_ids || [],
       **last_edit_fields(history)
     }
   end

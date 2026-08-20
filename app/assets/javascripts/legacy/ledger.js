@@ -165,6 +165,19 @@ async function load() {
     data = await ledgerRes.json();
     matchData = matchDataResolved;
   } catch (e) {
+    // Same as the matcher's loadAll: a full reload owns the history until it
+    // lands, so this waits it out and loads once rather than reporting a
+    // failure or rendering an empty ledger.
+    if (e instanceof ReloadInProgressError) {
+      showLedgerMessage(`<div class="empty-msg">A full reload of this organization is running — waiting for it to finish…</div>`);
+      if (await waitForReloadToLand()) return load();
+      showLedgerMessage(`<div class="empty-msg">Still reloading. <a href="#" class="nav-link load-retry">Retry</a></div>`);
+      document.querySelector(".load-retry").addEventListener("click", (ev) => {
+        ev.preventDefault();
+        load();
+      });
+      return false;
+    }
     showLedgerMessage(`<div class="empty-msg">Could not load transactions. <a href="#" class="nav-link load-retry">Retry</a></div>`);
     document.querySelector(".load-retry").addEventListener("click", (ev) => {
       ev.preventDefault();
@@ -174,7 +187,7 @@ async function load() {
   }
 
   applyMatches(matchData.matches);
-  lastResynced = matchData.resynced || [];
+  lastMatchChanges = matchData.match_changes || [];
 
   // Keep the zero-point row (as a reference) and everything after it,
   // then show newest first.
@@ -213,7 +226,7 @@ async function reloadInPlace() {
   }
 
   applyMatches(matchData.matches);
-  lastResynced = matchData.resynced || [];
+  lastMatchChanges = matchData.match_changes || [];
 
   const zeroIdx = data.ledger.findIndex((r) => r.is_zero_point);
   const kept = zeroIdx >= 0 ? data.ledger.slice(zeroIdx) : data.ledger;
@@ -265,17 +278,39 @@ async function reloadMatches() {
 }
 
 let transactionsRefreshing = false;
-// Matches whose discrepancy the server re-derived on the last load, because the
-// HCB transactions behind them had changed value (see Matches::Resync). Said
-// out loud rather than left to move the numbers quietly: a match that stopped
-// balancing is usually the very thing a sync or full reload was reaching for.
-let lastResynced = [];
+// What the server's resync did to this organization's matches on the last load
+// (see Matches::Resync::Result#match_changes). One list, one shape: each entry
+// carries a `kind` of "amount", "dropped" or "unresolved". Worth saying out
+// loud rather than letting the numbers move quietly -- a match that stopped
+// balancing, or lost a leg, is usually the very thing a sync or full reload was
+// reaching for.
+let lastMatchChanges = [];
 
-function resyncNote() {
-  if (!lastResynced.length) return "";
-  const n = lastResynced.length;
-  return ` — ${n} match${n === 1 ? "" : "es"} no longer balance${n === 1 ? "s" : ""} (amounts changed on HCB)`;
+function matchChangeNote() {
+  if (!lastMatchChanges.length) return "";
+
+  const of = (kind) => lastMatchChanges.filter((c) => c.kind === kind);
+  const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "es"}`;
+  const parts = [];
+
+  const moved = of("amount");
+  if (moved.length) parts.push(`${plural(moved.length, "match")} changed value (amounts changed on HCB)`);
+
+  const dropped = of("dropped");
+  if (dropped.length) {
+    const undone = dropped.filter((c) => c.undone).length;
+    parts.push(`${plural(dropped.length, "match")} had transactions removed that HCB no longer has`
+      + (undone ? `, ${undone} undone entirely` : ""));
+  }
+
+  const unresolved = of("unresolved");
+  if (unresolved.length) {
+    parts.push(`${plural(unresolved.length, "match")} reference${unresolved.length === 1 ? "s" : ""} transactions HCB no longer has (left alone — too many went missing at once to be sure)`);
+  }
+
+  return parts.length ? ` — ${parts.join("; ")}` : "";
 }
+
 
 function setSyncNote(text) {
   document.getElementById("sync-note").textContent = text;
@@ -391,7 +426,7 @@ async function fullReloadTransactionsAndRender() {
       setSyncNote("full reload finished, but this page couldn't load it — reload the page");
       return;
     }
-    setSyncNote(changed ? `full reload complete${resyncNote()}` : "still running — reload this page in a few minutes to see the result");
+    setSyncNote(changed ? `full reload complete${matchChangeNote()}` : "still running — reload this page in a few minutes to see the result");
   } finally {
     transactionsRefreshing = false;
     setSyncButtonsDisabled(false);

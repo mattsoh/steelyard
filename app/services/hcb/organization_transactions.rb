@@ -103,6 +103,12 @@ module Hcb
 
       result = cached_result
       unless result
+        # A claimed full reload has purged the caches and is rebuilding them.
+        # Draining here would be a second full walk of the same history against
+        # the rate limit the claim exists to protect -- so this answers "nothing
+        # yet" and lets the caller say a reload is running (see #sync_state).
+        return [] if full_reload_running?
+
         computed = false
         result = Rails.cache.fetch(cache_key, expires_in: TTL, race_condition_ttl: 10.seconds) do
           computed = true
@@ -233,6 +239,44 @@ module Hcb
 
     def full_reload_claim = Rails.cache.read(full_reload_lock_key)
 
+    def full_reload_running? = full_reload_claim.present?
+
+    # Drops everything derived from the previous drain, so a full reload starts
+    # from nothing rather than on top of what it's replacing.
+    #
+    # The drain a reload performs was always fresh -- it raw-pages HCB and never
+    # consults the baseline -- but that isn't the same as starting clean, and the
+    # difference is where the stale copies were surviving:
+    #
+    #   * the baseline. Left in place, the *next* ordinary redrain splices the
+    #     old rows straight back on -- including whatever wrong value someone
+    #     reached for the full reload to be rid of. A reload that leaves this
+    #     behind can be undone by the request after it.
+    #   * the side caches (by-id, presented, ledger order, derived). Keyed to
+    #     the old drain's token so nothing reads them once a new one publishes,
+    #     but until then they're what every warm request is answered from.
+    #   * the per-id transaction cache, which outlives the drain by a day and
+    #     can shadow a transaction the reload just re-fetched. Orphaned by
+    #     generation rather than deleted -- see
+    #     OrganizationLedger#bump_single_transaction_generation!.
+    #
+    # Dropping the stamp is also what stops the drain caches being served from
+    # any process's Hcb::LocalCache: entries there are only readable on an exact
+    # version-token match, and after this there is no current token to match.
+    def purge!
+      [ cache_key, by_id_key, derived_key, presented_key, ledger_order_key, baseline_key, fetched_at_key ].each do |key|
+        Rails.cache.delete(key)
+        LocalCache.forget(key)
+      end
+      OrganizationLedger.bump_single_transaction_generation!(@organization_id)
+
+      # This instance's own memo of all of the above, which would otherwise go
+      # on answering from the drain that was just dropped.
+      @stamp = nil
+      @memo = {}
+      nil
+    end
+
     # Whether this stream is the one holding the current claim, and so may ask
     # for reload-mode pages.
     def full_reload_stream?(stream_id)
@@ -280,6 +324,13 @@ module Hcb
     #              page can account for; the caller should fall back to a full
     #              redrain (WarmOrganizationTransactionsJob, in the background)
     def sync_head!
+      # A full reload is a stronger version of what this would ask for, already
+      # in flight. Answering :deep would have the caller queue an incremental
+      # redrain on top of it -- which spends an HCB request to splice the very
+      # baseline the reload dropped, and publishes a fetched_at that the
+      # reloading tab reads as its own drain having landed.
+      return :reloading if full_reload_running?
+
       cached = cached_result
       return :deep if cached.blank?
 
@@ -317,7 +368,7 @@ module Hcb
     # fetched_at advances exactly when a new result is published, which is the
     # signal a caller waiting on #sync_head!'s :deep case watches for.
     def sync_state
-      { fetched_at: stamp && stamp[:at].to_f, count: stamp && stamp[:count] }
+      { fetched_at: stamp && stamp[:at].to_f, count: stamp && stamp[:count], reloading: full_reload_running? }
     end
 
     # One HCB page per call, for callers that want to render transactions as
@@ -353,16 +404,26 @@ module Hcb
     def fetch_page(stream_id:, after: nil, limit: PAGE_SIZE, reload: false)
       if reload
         touch_full_reload!(stream_id)
-      elsif after.blank?
-        cached = cached_result
+      else
+        cached = after.blank? ? cached_result : nil
         return { data: cached, has_more: false, next_after: nil, total_count: cached.size } if cached
 
-        baseline = Rails.cache.read(baseline_key)
-        if baseline.present?
-          result = incremental_drain(baseline)
-          publish(result)
-          Rails.cache.delete(buffer_key(stream_id))
-          return { data: result, has_more: false, next_after: nil, total_count: result.size }
+        # Checked for every page, not just the first: a reload claimed midway
+        # through someone's ordinary stream would otherwise have that stream
+        # walk the whole (purged) history alongside it and publish its own
+        # result over the reload's. Reported rather than silently empty, so the
+        # caller waits for the reload instead of rendering an empty
+        # organization.
+        return { data: [], has_more: false, next_after: nil, total_count: 0, reloading: true } if full_reload_running?
+
+        if after.blank?
+          baseline = Rails.cache.read(baseline_key)
+          if baseline.present?
+            result = incremental_drain(baseline)
+            publish(result)
+            Rails.cache.delete(buffer_key(stream_id))
+            return { data: result, has_more: false, next_after: nil, total_count: result.size }
+          end
         end
       end
 
@@ -585,6 +646,11 @@ module Hcb
     # within the interval just gets served the current cache.
     def maybe_refresh_ahead
       return unless @client.respond_to?(:user_id) && @client.user_id
+      # Same reasoning as #sync_head!'s :reloading -- and more pressing here,
+      # because a purged cache reads as maximally stale and would otherwise
+      # queue a background redrain on every single request for the duration of
+      # the reload.
+      return if full_reload_running?
 
       return if stamp && Time.now - stamp[:at] < BACKGROUND_REFRESH_INTERVAL
       return unless Rails.cache.write(refresh_lock_key, true, expires_in: BACKGROUND_REFRESH_INTERVAL, unless_exist: true)

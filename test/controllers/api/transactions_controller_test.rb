@@ -217,4 +217,119 @@ class Api::TransactionsControllerTest < ActionController::TestCase
     assert_equal 3, body["rows"].size
     assert_not body["has_more"]
   end
+
+  test "reload clears the organization's caches before the walk starts, not after it finishes" do
+    transactions = (1..3).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
+    fake_client = FakeHcbClient.new(transactions: transactions)
+
+    Hcb::Client.stub :new, fake_client do
+      stub_membership("reader") do
+        get :index, params: { organization_id: "org_1" } # warms everything
+        post :reload, params: { organization_id: "org_1" }
+      end
+    end
+
+    service = Hcb::OrganizationTransactions.new(fake_client, "org_1")
+    # Nothing of the previous drain is left to answer another request from --
+    # the point of a full reload being a clean slate rather than an overwrite.
+    assert_nil service.sync_state[:fetched_at]
+    assert_nil service.find("txn_1")
+    assert_nil service.presented
+    assert service.sync_state[:reloading]
+  end
+
+  test "index says it is reloading rather than reporting an organization with no transactions" do
+    fake_client = FakeHcbClient.new(transactions: [ { "id" => "txn_1", "date" => "2026-01-01", "amount_cents" => 1 } ])
+
+    Hcb::Client.stub :new, fake_client do
+      stub_membership("reader") do
+        post :reload, params: { organization_id: "org_1" }
+        get :index, params: { organization_id: "org_1" }
+      end
+    end
+
+    body = JSON.parse(response.body)
+    assert body["reloading"]
+    assert_empty body["transactions"]
+  end
+
+  test "refresh queues nothing while a full reload is already rebuilding the history" do
+    fake_client = FakeHcbClient.new(transactions: [ { "id" => "txn_1", "date" => "2026-01-01", "amount_cents" => 1 } ])
+
+    Hcb::Client.stub :new, fake_client do
+      stub_membership("reader") do
+        post :reload, params: { organization_id: "org_1" }
+        # An incremental redrain queued here would splice the baseline the
+        # reload just dropped, and publish a fetched_at the reloading tab reads
+        # as its own drain having landed.
+        assert_no_enqueued_jobs(only: WarmOrganizationTransactionsJob) do
+          post :refresh, params: { organization_id: "org_1" }
+        end
+      end
+    end
+
+    assert_equal "reloading", JSON.parse(response.body)["status"]
+  end
+
+  test "an ordinary stream is told to wait instead of walking the history alongside the reload" do
+    transactions = (1..3).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
+    fake_client = FakeHcbClient.new(transactions: transactions)
+
+    Hcb::Client.stub :new, fake_client do
+      stub_membership("reader") do
+        post :reload, params: { organization_id: "org_1" }
+        calls_before = fake_client.transactions_calls
+        get :page, params: { organization_id: "org_1", stream_id: "bystander" }
+        assert_equal calls_before, fake_client.transactions_calls
+      end
+    end
+
+    body = JSON.parse(response.body)
+    assert body["reloading"]
+    assert_empty body["rows"]
+  end
+
+  test "a full reload rebuilds the history and the matches are re-derived against what came back" do
+    incoming = { "id" => "txn_in", "date" => "2026-01-01", "amount_cents" => 10_000 }
+    outgoing = { "id" => "txn_out", "date" => "2026-01-02", "amount_cents" => -10_000 }
+    fake_client = FakeHcbClient.new(transactions: [ outgoing, incoming ])
+
+    match = Match.create!(hcb_organization_id: "org_1", discrepancy_cents: 0, created_by: @user)
+    match.match_transactions.create!(hcb_organization_id: "org_1", hcb_transaction_id: "txn_in", direction: :incoming)
+    match.match_transactions.create!(hcb_organization_id: "org_1", hcb_transaction_id: "txn_out", direction: :outgoing)
+
+    Hcb::Client.stub :new, fake_client do
+      stub_membership("reader") do
+        get :index, params: { organization_id: "org_1" }
+
+        # Between the two loads HCB re-groups one leg away and restates the
+        # other -- exactly what a full reload exists to discover.
+        fake_client.remove_transaction("txn_out")
+        fake_client.update_transaction("txn_in", "amount_cents" => 12_500)
+
+        post :reload, params: { organization_id: "org_1" }
+        stream_id = JSON.parse(response.body)["stream_id"]
+        # The purge means nothing of the previous drain is left to resync
+        # against, which is why the matches are only re-derived once the fresh
+        # walk has landed -- not during it.
+        get :page, params: { organization_id: "org_1", stream_id: stream_id, reload: "1" }
+      end
+    end
+
+    # Matches are re-derived when they're read, against whatever the reload
+    # published -- so this is the composition being checked: purge, fresh walk,
+    # then the matches judged against what came back rather than what was
+    # cached before.
+    resync = Matches::Resync.new(
+      ledger: OrganizationLedger.new(fake_client, "org_1"),
+      matches: Match.active.for_organization("org_1").includes(:match_transactions, :adjustments)
+    ).call
+
+    dropped = resync.dropped.sole
+    assert_equal [ "txn_out" ], dropped.transaction_ids
+    assert_equal [ "txn_in" ], match.reload.match_transactions.active.map(&:hcb_transaction_id)
+    # Off by the reloaded amount of the leg that survived, not the one it was
+    # confirmed against.
+    assert_equal 12_500, match.discrepancy_cents
+  end
 end

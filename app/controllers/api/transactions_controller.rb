@@ -22,6 +22,9 @@ class Api::TransactionsController < ApplicationController
       zero_balance_date: cutoff&.date.to_json,
       zero_balance_selected_id: cutoff&.transaction_id.to_json,
       zero_balance_options: ledger.zero_options.map { |o| { date: o.date, transaction_id: o.transaction_id, beginning: o.beginning? } }.to_json,
+      # An organization mid-full-reload has no drain to answer from, so this
+      # would otherwise be indistinguishable from one with no transactions.
+      reloading: ledger.reloading?.to_json,
       transactions: "[#{ledger.transaction_fragments(ids).join(',')}]"
     )
   end
@@ -46,6 +49,9 @@ class Api::TransactionsController < ApplicationController
   def refresh
     transactions = Hcb::OrganizationTransactions.new(hcb_client, organization_id)
     status = transactions.sync_head!
+    # :reloading means a full reload is already rebuilding this organization's
+    # history from scratch, which subsumes anything this check would ask for --
+    # so nothing is queued behind it and the caller just waits for that drain.
     WarmOrganizationTransactionsJob.perform_later(current_user.id, organization_id) if status == :deep
 
     render json: { status: status, **transactions.sync_state }
@@ -58,17 +64,26 @@ class Api::TransactionsController < ApplicationController
   # way short of the full reload below. Costs a single HCB request.
   #
   # Answers with both the old and new copy so the caller can say what actually
-  # changed, plus any match whose discrepancy moved as a result -- a leg
-  # changing amount is exactly the case where a match saved as balanced isn't
-  # balanced any more.
+  # changed, plus anything that happened to the matches this transaction is a
+  # leg of -- in the same `match_changes` shape every other surface reports (see
+  # Matches::Resync::Result). A leg changing amount is exactly the case where a
+  # match saved as balanced isn't balanced any more.
   def refresh_one
-    result = Hcb::OrganizationTransactions.new(hcb_client, organization_id).refresh_one!(params[:id])
+    transactions = Hcb::OrganizationTransactions.new(hcb_client, organization_id)
+    # Mid-reload there's no drained history to splice a re-fetched transaction
+    # into, so this would otherwise report the transaction as not belonging to
+    # the organization -- which isn't what happened.
+    if transactions.full_reload_running?
+      return render json: { error: "A full reload of this organization is running — try again once it finishes." }, status: :conflict
+    end
+
+    result = transactions.refresh_one!(params[:id])
     return render json: { error: "That transaction isn't part of this organization's history." }, status: :not_found if result.nil?
 
     render json: {
       previous: Hcb::TransactionPresenter.new(result.previous).as_json,
       transaction: Hcb::TransactionPresenter.new(result.current).as_json,
-      matches_changed: resync_matches_for(params[:id])
+      match_changes: resync_matches_for(params[:id])
     }
   rescue OAuth2::Error => e
     raise unless e.response.status == 404
@@ -97,6 +112,12 @@ class Api::TransactionsController < ApplicationController
     claimed = transactions.claim_full_reload!(stream_id)
 
     if claimed
+      # Dropped before the walk starts, not overwritten at the end of it: a
+      # reload is a clean slate, and until this runs every other request is
+      # still being answered from the drain it's replacing -- including the
+      # baseline, which the next ordinary redrain would splice the old rows
+      # back on from. See Hcb::OrganizationTransactions#purge!.
+      transactions.purge!
       WarmOrganizationTransactionsJob
         .set(wait: WarmOrganizationTransactionsJob::FALLBACK_DELAY)
         .perform_later(current_user.id, organization_id, full: true, stream_id: stream_id)
@@ -118,11 +139,12 @@ class Api::TransactionsController < ApplicationController
 
   private
 
-  # Re-derives the discrepancy of every active match this transaction is a leg
-  # of, now that its amount may have moved, and reports the ones that changed so
-  # the frontend can tell the user their match no longer balances (and re-render
-  # it into the right bucket). Built after the splice above, so the ledger reads
-  # the refreshed value.
+  # Re-derives every active match this transaction is a leg of, now that HCB may
+  # have restated it -- or stopped accounting for it, in which case the leg is
+  # dropped from the match and what's left is re-derived without it. Reported
+  # either way so the frontend can tell the user their match changed (and
+  # re-render it into the right bucket). Built after the splice above, so the
+  # ledger reads the refreshed value.
   def resync_matches_for(transaction_id)
     match_ids = MatchTransaction.active
       .where(hcb_organization_id: organization_id, hcb_transaction_id: transaction_id)
@@ -130,8 +152,7 @@ class Api::TransactionsController < ApplicationController
     matches = Match.active.for_organization(organization_id)
       .where(id: match_ids).includes(:match_transactions, :adjustments)
 
-    Matches::Resync.new(ledger: OrganizationLedger.new(hcb_client, organization_id), matches: matches).call
-      .map { |change| { id: change.match.id, from: change.from_cents / 100.0, to: change.to_cents / 100.0 } }
+    Matches::Resync.new(ledger: OrganizationLedger.new(hcb_client, organization_id), matches: matches).call.match_changes
   end
 
   # Ids only: whether each one can be resolved at all is settled by

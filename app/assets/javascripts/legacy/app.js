@@ -33,12 +33,13 @@ let traySnapshotRestored = false;
 // True from the moment a full reload is accepted by the server until the
 // re-stream that follows it has finished -- see clearForFullReload.
 let restreamingFullReload = false;
-// Matches whose discrepancy the server re-derived on the last load, because the
-// HCB transactions behind them had changed value (see Matches::Resync). Worth
-// saying out loud rather than letting the numbers move quietly: a match that
-// stopped balancing is usually the very thing a sync or a full reload was
+// What the server's resync did to this organization's matches on the last load
+// (see Matches::Resync::Result#match_changes). One list, one shape: each entry
+// carries a `kind` of "amount", "dropped" or "unresolved". Worth saying out
+// loud rather than letting the numbers move quietly -- a match that stopped
+// balancing, or lost a leg, is usually the very thing a sync or full reload was
 // reaching for.
-let lastResynced = [];
+let lastMatchChanges = [];
 // The tray snapshot that full reload parked, held here (rather than read back
 // out of localStorage) so an in-progress match survives the re-stream even if
 // the re-stream itself fails and the page carries on without one.
@@ -309,6 +310,21 @@ async function loadAll() {
     matchData = matchDataResolved;
   } catch (e) {
     clearLoadProgress();
+    // Someone else's full reload owns this organization's history right now, so
+    // there is nothing to load until it lands -- waiting for it and loading
+    // once is the whole recovery, and it's not an error to report.
+    if (e instanceof ReloadInProgressError) {
+      showListsMessage(`<div class="empty-msg">A full reload of this organization is running — waiting for it to finish…</div>`);
+      if (await waitForReloadToLand()) return loadAll();
+      showListsMessage(`<div class="empty-msg">Still reloading. <a href="#" class="nav-link load-retry">Retry</a></div>`);
+      document.querySelectorAll(".load-retry").forEach((el) => {
+        el.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          loadAll();
+        });
+      });
+      return false;
+    }
     showListsMessage(`<div class="empty-msg">Could not load transactions. <a href="#" class="nav-link load-retry">Retry</a></div>`);
     document.querySelectorAll(".load-retry").forEach((el) => {
       el.addEventListener("click", (ev) => {
@@ -322,7 +338,7 @@ async function loadAll() {
   allTransactions = txData.transactions;
   byId = new Map(allTransactions.map((t) => [t.id, t]));
   matches = matchData.matches;
-  lastResynced = matchData.resynced || [];
+  lastMatchChanges = matchData.match_changes || [];
   transactionsLoaded = true;
 
   zeroBalanceOptions = txData.zero_balance_options || [];
@@ -366,7 +382,7 @@ async function reloadInPlace() {
   // as selectable while it's in the tray); re-adding it from the server's list
   // would make them look used and drop them out of the lists mid-edit.
   matches = editingMatchId === null ? matchData.matches : matchData.matches.filter((m) => m.id !== editingMatchId);
-  lastResynced = matchData.resynced || [];
+  lastMatchChanges = matchData.match_changes || [];
 
   // A transaction can leave the working set between loads -- most likely
   // because someone else moved the cutoff past it. Drop those from the tray
@@ -442,7 +458,7 @@ async function refreshTransactions({ announce }) {
     }
     const added = allTransactions.length - before;
     const loaded = added > 0 ? `${added} new transaction${added === 1 ? "" : "s"} loaded` : "updated";
-    setSyncNote(`${loaded}${resyncNote()}`);
+    setSyncNote(`${loaded}${matchChangeNote()}`);
   } finally {
     transactionsRefreshing = false;
     setSyncButtonsDisabled(false);
@@ -535,7 +551,7 @@ async function fullReloadTransactionsAndRender() {
       setSyncNote("full reload finished, but this page couldn't load it — reload the page");
       return;
     }
-    setSyncNote(changed ? `full reload complete${resyncNote()}` : "still running — reload this page in a few minutes to see the result");
+    setSyncNote(changed ? `full reload complete${matchChangeNote()}` : "still running — reload this page in a few minutes to see the result");
   } finally {
     restreamingFullReload = false;
     transactionsRefreshing = false;
@@ -543,11 +559,31 @@ async function fullReloadTransactionsAndRender() {
   }
 }
 
-function resyncNote() {
-  if (!lastResynced.length) return "";
-  const n = lastResynced.length;
-  return ` — ${n} match${n === 1 ? "" : "es"} no longer balance${n === 1 ? "s" : ""} (amounts changed on HCB)`;
+function matchChangeNote() {
+  if (!lastMatchChanges.length) return "";
+
+  const of = (kind) => lastMatchChanges.filter((c) => c.kind === kind);
+  const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "es"}`;
+  const parts = [];
+
+  const moved = of("amount");
+  if (moved.length) parts.push(`${plural(moved.length, "match")} changed value (amounts changed on HCB)`);
+
+  const dropped = of("dropped");
+  if (dropped.length) {
+    const undone = dropped.filter((c) => c.undone).length;
+    parts.push(`${plural(dropped.length, "match")} had transactions removed that HCB no longer has`
+      + (undone ? `, ${undone} undone entirely` : ""));
+  }
+
+  const unresolved = of("unresolved");
+  if (unresolved.length) {
+    parts.push(`${plural(unresolved.length, "match")} reference${unresolved.length === 1 ? "s" : ""} transactions HCB no longer has (left alone — too many went missing at once to be sure)`);
+  }
+
+  return parts.length ? ` — ${parts.join("; ")}` : "";
 }
+
 
 function usedIds() {
   const used = new Set();
@@ -1249,6 +1285,21 @@ function hiddenBadgeHtml(m) {
   return `<div class="hidden-badge" title="Hidden${who} — it stays matched and keeps its discrepancy, it just isn't listed here unless “Show hidden” is ticked">🙈 Hidden</div>`;
 }
 
+// A leg HCB no longer accounts for. The row can't be trusted to balance -- the
+// server deliberately doesn't resync a match it can't fully resolve (see
+// Matches::Resync), so its discrepancy is the last one that *could* be
+// computed, not the truth about what's on HCB now.
+function missingLegBadgeHtml(m) {
+  const missing = m.unresolved_ids || [];
+  if (!missing.length) return "";
+  const label = missing.length === 1 ? "1 transaction" : `${missing.length} transactions`;
+  const title = `${missing.join(", ")} — no longer in this organization's history on HCB. `
+    + "Left in place because too many went missing at once to be sure the drain is right. "
+    + "The discrepancy shown is the last one that could be worked out, not a current figure. "
+    + "Click to remove them from this match and re-derive what's left.";
+  return `<button type="button" class="missing-leg-badge" data-prune="${m.id}" title="${escapeHtml(title)}">⚠ ${label} missing</button>`;
+}
+
 function matchRowHtml(m) {
   const incoming = m.incoming_ids.map((id) => byId.get(id)).filter(Boolean);
   const outgoing = m.outgoing_ids.map((id) => byId.get(id)).filter(Boolean);
@@ -1282,7 +1333,7 @@ function matchRowHtml(m) {
     ${toggleHtml}
     <div class="side-in"${sideToggle}>${sideIn}</div>
     <div class="side-out"${sideToggle}>${sideOut}</div>
-    <div class="${discClass}">${discText}${conflictBadgeHtml(m)}${hiddenBadgeHtml(m)}${matchMetaHtml(m)}</div>
+    <div class="${discClass}">${discText}${missingLegBadgeHtml(m)}${conflictBadgeHtml(m)}${hiddenBadgeHtml(m)}${matchMetaHtml(m)}</div>
     <div class="match-row-actions">
       <button class="secondary" data-view="${m.id}" title="Open this match — full details, and who changed what">View</button>
       <button class="secondary" data-edit="${m.id}" ${otherRowDisabled}>Edit</button>
@@ -1363,10 +1414,11 @@ function delegateMatchListControls(list) {
   delegateRowControls(list);
 
   list.addEventListener("click", (e) => {
-    const el = e.target.closest("[data-toggle], [data-view], [data-edit], [data-hide], [data-delete]");
+    const el = e.target.closest("[data-toggle], [data-view], [data-edit], [data-hide], [data-delete], [data-prune]");
     if (!el || el.disabled) return;
 
-    const { toggle, view, edit, hide, delete: undo } = el.dataset;
+    const { toggle, view, edit, hide, delete: undo, prune } = el.dataset;
+    if (prune !== undefined) return pruneMatch(Number(prune));
     if (toggle !== undefined) return toggleMatchRow(Number(toggle));
     if (view !== undefined) return showMatchModal(view);
     if (edit !== undefined) return editMatch(Number(edit));
@@ -1376,6 +1428,41 @@ function delegateMatchListControls(list) {
     }
     if (undo !== undefined) return deleteMatch(Number(undo));
   });
+}
+
+// Applies the leg drops the server declined to make on its own, for one match.
+//
+// A resync won't drop legs en masse unprompted -- a drain that came back short
+// looks identical to HCB having lost everything, and it won't guess the
+// destructive reading (see Matches::Resync#safe_to_prune?). This is the
+// confirmation that turns a flagged row into an applied one.
+async function pruneMatch(matchId) {
+  const flagged = lastMatchChanges.find((c) => c.id === matchId && c.kind === "unresolved");
+  const ids = flagged ? flagged.transaction_ids : [];
+  const what = ids.length ? `\n\n${ids.join("\n")}` : "";
+  if (!confirm(
+    "Remove these transactions from the match?" + what
+    + "\n\nHCB no longer lists them in this organization. They'll be taken out of the match and its "
+    + "discrepancy re-worked from what's left — which may move it between balanced and unbalanced.\n\n"
+    + "If they turn up on HCB again the match will pick them back up on its own."
+  )) return;
+
+  try {
+    const res = await fetch(`${API_BASE}/api/matches/prune`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: matchId }),
+    });
+    if (await handledReauthRequired(res)) return;
+    if (!res.ok) {
+      setSyncNote((await res.json().catch(() => ({}))).error || "could not remove those transactions");
+      return;
+    }
+    await reloadInPlace();
+    setSyncNote(`transactions removed${matchChangeNote()}`);
+  } catch {
+    setSyncNote("could not remove those transactions");
+  }
 }
 
 function renderMatches() {

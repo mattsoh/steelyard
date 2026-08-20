@@ -87,6 +87,7 @@ Rails.application.routes.draw do
       get    "matches",           to: "matches#index"
       get    "matches/:id",       to: "matches#show"
       post   "matches",           to: "matches#create"
+      post   "matches/prune",     to: "matches#prune"
       patch  "matches/:id",       to: "matches#update"
       delete "matches/:id",       to: "matches#destroy"
       get    "ledger",            to: "ledger#index"

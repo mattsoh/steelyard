@@ -229,7 +229,7 @@ async function refreshDetailTransaction() {
     return;
   }
 
-  const matchesChanged = data.matches_changed || [];
+  const matchesChanged = data.match_changes || [];
 
   // Hand the fresh values to whichever page is hosting the modal, so the row
   // behind it (and any total computed from it) stops showing the stale amount.
@@ -283,8 +283,21 @@ function refreshNoteHtml(changes, matchesChanged) {
     .join("; ");
   // Spelled out per match rather than counted: "a match is now off by $12" is
   // the part someone actually has to go and do something about.
+  const standing = (m) => (m.to === 0 ? "balanced" : `off by ${fmtDetail(m.to)}`);
   const matchText = matchesChanged
-    .map((m) => (m.to === 0 ? "a match now balances" : `a match is now off by ${fmtDetail(m.to)}`))
+    .map((m) => {
+      // HCB stopped accounting for this transaction, so it's no longer part of
+      // the match at all -- said plainly, because the match now pairs something
+      // different from what whoever confirmed it chose.
+      if (m.kind === "dropped") {
+        if (m.undone) return "a match was undone — it had no transactions left";
+        return `removed from a match (HCB no longer has it) — that match is now ${standing(m)}`;
+      }
+      // Left in place rather than removed, so the match's figure is the last
+      // one that could be worked out. Nothing moved; that's the point.
+      if (m.kind === "unresolved") return "a match references transactions HCB no longer has — its figure may be out of date";
+      return m.to === 0 ? "a match now balances" : `a match is now off by ${fmtDetail(m.to)}`;
+    })
     .join("; ");
 
   return [changeText, matchText].filter(Boolean).join(" — ");

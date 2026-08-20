@@ -74,6 +74,14 @@ module Hcb
         value
       end
 
+      # Drops one key outright, for a caller that isn't replacing the entry with
+      # a newer one -- a full reload clearing the drain caches rather than
+      # publishing over them (Hcb::OrganizationTransactions#purge!). Entries for
+      # a version token nothing will ask for again are already unreadable, since
+      # #read only answers on an exact token match; this is about not holding
+      # megabytes of them until the size cap happens to evict them.
+      def forget(key) = MUTEX.synchronize { @entries.delete(key) }
+
       def clear = MUTEX.synchronize { @entries.clear }
     end
   end

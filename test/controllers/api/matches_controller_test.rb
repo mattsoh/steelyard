@@ -185,11 +185,16 @@ class Api::MatchesControllerTest < ActionController::TestCase
 
     assert_response :success
     body = JSON.parse(response.body)
-    # Still listed as a leg -- the match really does reference it, and hiding
-    # that would leave the sides not adding up to the discrepancy beside them.
-    assert_equal [ "txn_elsewhere" ], body["outgoing_ids"]
+    # The leg is no longer part of the match: org_1's history doesn't account
+    # for this transaction, so the resync drops it and re-derives what's left
+    # (see Matches::Resync). What matters here is that it was never *described*
+    # on the way out -- the only copy of its contents belongs to another
+    # organization, and a per-organization cache key is what keeps it there.
+    assert_empty body["outgoing_ids"]
     assert_not body["transactions"].key?("txn_elsewhere")
     assert_no_match(/Another org/, response.body)
+    # Kept, not deleted, so remapping it back into org_1 restores the leg.
+    assert_equal [ "txn_elsewhere" ], match.match_transactions.dropped.map(&:hcb_transaction_id)
   end
 
   def with_memory_cache
@@ -431,9 +436,10 @@ class Api::MatchesControllerTest < ActionController::TestCase
     end
 
     assert_response :success
-    resynced = JSON.parse(response.body)["resynced"]
+    resynced = JSON.parse(response.body)["match_changes"]
     assert_equal 1, resynced.size
     assert_equal match.id, resynced.first["id"]
+    assert_equal "amount", resynced.first["kind"]
     assert_equal 0.0, resynced.first["from"]
     assert_equal 10.0, resynced.first["to"]
     assert_equal 1_000, match.reload.discrepancy_cents
@@ -450,6 +456,159 @@ class Api::MatchesControllerTest < ActionController::TestCase
       end
     end
 
-    assert_empty JSON.parse(response.body)["resynced"]
+    assert_empty JSON.parse(response.body)["match_changes"]
+  end
+
+  test "a full reload in progress leaves stored discrepancies alone rather than resyncing against nothing" do
+    match = Match.create!(hcb_organization_id: "org_1", discrepancy_cents: 0, created_by: @user)
+    match.match_transactions.create!(hcb_organization_id: "org_1", hcb_transaction_id: "txn_in", direction: :incoming)
+    match.match_transactions.create!(hcb_organization_id: "org_1", hcb_transaction_id: "txn_out", direction: :outgoing)
+
+    Hcb::Client.stub :new, @fake_client do
+      stub_membership("reader") do
+        Hcb::OrganizationTransactions.new(@fake_client, "org_1").claim_full_reload!("stream-1")
+        get :index, params: { organization_id: "org_1" }
+      end
+    end
+
+    assert_response :success
+    # Every leg is unresolvable while the drain is being rebuilt. Summing what
+    # can be resolved would replace a correct number with a wrong one and stamp
+    # it as freshly confirmed, so the resync skips the match entirely.
+    assert_empty JSON.parse(response.body)["match_changes"]
+    assert_equal 0, match.reload.discrepancy_cents
+  end
+
+  test "index drops a leg that is no longer in the organization's history and re-derives the match" do
+    match = Match.create!(hcb_organization_id: "org_1", discrepancy_cents: 0, created_by: @user)
+    match.match_transactions.create!(hcb_organization_id: "org_1", hcb_transaction_id: "txn_in", direction: :incoming)
+    match.match_transactions.create!(hcb_organization_id: "org_1", hcb_transaction_id: "txn_out", direction: :outgoing)
+
+    # HCB no longer accounts for the outgoing leg at all -- voided, reversed,
+    # re-grouped under another organization. It isn't part of what this match
+    # pairs any more, so it stops being part of the match.
+    @fake_client.remove_transaction("txn_out")
+
+    Hcb::Client.stub :new, @fake_client do
+      stub_membership("reader") do
+        get :index, params: { organization_id: "org_1" }
+      end
+    end
+
+    assert_response :success
+    body = JSON.parse(response.body)
+
+    dropped = body["match_changes"].sole
+    assert_equal match.id, dropped["id"]
+    assert_equal "dropped", dropped["kind"]
+    assert_equal [ "txn_out" ], dropped["transaction_ids"]
+    assert_equal 0.0, dropped["from"]
+    assert_equal 100.0, dropped["to"]
+    assert_not dropped["undone"]
+
+    # A match that read as balanced now reads as off by the leg that went --
+    # which is what it actually claims now.
+    assert_equal 10_000, match.reload.discrepancy_cents
+    assert_equal [ "txn_in" ], match.match_transactions.active.map(&:hcb_transaction_id)
+
+    # Serialized from the pruned rows, not the ones loaded before the resync.
+    serialized = body["matches"].sole
+    assert_equal [ "txn_in" ], serialized["incoming_ids"]
+    assert_empty serialized["outgoing_ids"]
+  end
+
+  test "index leaves unresolved_ids empty for a match whose legs all still resolve" do
+    match = Match.create!(hcb_organization_id: "org_1", discrepancy_cents: 0, created_by: @user)
+    match.match_transactions.create!(hcb_organization_id: "org_1", hcb_transaction_id: "txn_in", direction: :incoming)
+    match.match_transactions.create!(hcb_organization_id: "org_1", hcb_transaction_id: "txn_out", direction: :outgoing)
+
+    Hcb::Client.stub :new, @fake_client do
+      stub_membership("reader") do
+        get :index, params: { organization_id: "org_1" }
+      end
+    end
+
+    body = JSON.parse(response.body)
+    assert_empty body["match_changes"]
+    assert_empty body["matches"].sole["unresolved_ids"]
+  end
+
+  def unresolvable_matches(count)
+    Array.new(count) do |n|
+      m = Match.create!(hcb_organization_id: "org_1", discrepancy_cents: 0, created_by: @user)
+      m.match_transactions.create!(hcb_organization_id: "org_1", hcb_transaction_id: "txn_gone_#{n}", direction: :incoming)
+      m
+    end
+  end
+
+  test "prune applies the drops the safety valve declined, for the match asked about" do
+    matches = unresolvable_matches(6)
+
+    Hcb::Client.stub :new, @fake_client do
+      stub_membership("member") do
+        # The valve refuses on its own: six legs gone at once looks like a short
+        # drain rather than HCB losing all of them.
+        get :index, params: { organization_id: "org_1" }
+        assert_equal 6, JSON.parse(response.body)["match_changes"].count { |c| c["kind"] == "unresolved" }
+
+        post :prune, params: { organization_id: "org_1", id: matches.first.id }
+      end
+    end
+
+    assert_response :success
+    change = JSON.parse(response.body)["match_changes"].sole
+    assert_equal "dropped", change["kind"]
+    assert_equal matches.first.id, change["id"]
+
+    # Only the one asked about -- clicking one badge doesn't mean the whole org.
+    assert_empty matches.first.match_transactions.active
+    matches.drop(1).each { |m| assert_equal 1, m.match_transactions.active.count }
+  end
+
+  test "prune without a match id applies every declined drop" do
+    matches = unresolvable_matches(6)
+
+    Hcb::Client.stub :new, @fake_client do
+      stub_membership("member") { post :prune, params: { organization_id: "org_1" } }
+    end
+
+    assert_equal 6, JSON.parse(response.body)["match_changes"].size
+    matches.each { |m| assert_empty m.match_transactions.active }
+  end
+
+  test "a reader cannot prune" do
+    matches = unresolvable_matches(6)
+
+    Hcb::Client.stub :new, @fake_client do
+      stub_membership("reader") { post :prune, params: { organization_id: "org_1" } }
+    end
+
+    assert_response :forbidden
+    matches.each { |m| assert_equal 1, m.match_transactions.active.count }
+  end
+
+  test "a pruned leg is picked back up when HCB accounts for the transaction again" do
+    match = Match.create!(hcb_organization_id: "org_1", discrepancy_cents: 0, created_by: @user)
+    match.match_transactions.create!(hcb_organization_id: "org_1", hcb_transaction_id: "txn_in", direction: :incoming)
+    match.match_transactions.create!(hcb_organization_id: "org_1", hcb_transaction_id: "txn_out", direction: :outgoing)
+
+    Hcb::Client.stub :new, @fake_client do
+      stub_membership("reader") do
+        @fake_client.remove_transaction("txn_out")
+        get :index, params: { organization_id: "org_1" }
+        assert_equal 10_000, match.reload.discrepancy_cents
+
+        # Remapped back into the organization. Nobody should have to rebuild the
+        # match by hand to recover from someone else's mistake on HCB.
+        @fake_client.add_transactions([ { "id" => "txn_out", "date" => "2026-01-02", "memo" => "Grant", "amount_cents" => -10_000 } ])
+        get :index, params: { organization_id: "org_1" }
+      end
+    end
+
+    change = JSON.parse(response.body)["match_changes"].sole
+    assert_equal "restored", change["kind"]
+    assert_equal [ "txn_out" ], change["transaction_ids"]
+    assert_equal 0, match.reload.discrepancy_cents
+    assert_equal [ "txn_in", "txn_out" ], match.match_transactions.active.map(&:hcb_transaction_id).sort
   end
 end

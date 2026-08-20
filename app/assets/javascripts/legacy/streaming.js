@@ -64,6 +64,25 @@ function orgApiBase() {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// Thrown when the server says a full reload is rebuilding this organization's
+// history. Not a failure: there is deliberately nothing to read until that
+// drain lands, so callers wait for it rather than rendering an empty
+// organization or starting a second walk of their own.
+class ReloadInProgressError extends Error {
+  constructor() {
+    super("a full reload is in progress");
+    this.name = "ReloadInProgressError";
+  }
+}
+
+// Waits out a full reload someone else started, then reports whether it landed.
+// Deliberately keyed off no starting point: a reload purges the freshness stamp
+// (Hcb::OrganizationTransactions#purge!), so any fetched_at at all is newer than
+// what's there now.
+function waitForReloadToLand() {
+  return waitForNewerDrain(null, FULL_RELOAD_POLL_TIMEOUT_MS);
+}
+
 async function syncNewTransactions({ onSyncing } = {}) {
   let started;
   try {
@@ -75,6 +94,15 @@ async function syncNewTransactions({ onSyncing } = {}) {
   }
 
   if (started.status === "fresh") return false;
+
+  // A full reload is already rebuilding the whole history, which covers
+  // everything this check would have asked for. Wait for it rather than
+  // queueing anything behind it.
+  if (started.status === "reloading") {
+    invalidateCachedTransactionRows();
+    if (onSyncing) onSyncing();
+    return waitForReloadToLand();
+  }
 
   // Anything other than "fresh" means the server's copy has moved on, so the
   // client-side row cache is stale too -- drop it before any reload reads it.
@@ -212,6 +240,7 @@ async function loadPagesStreaming(pageUrl, onPage, { params = {}, streamId, useC
     const res = await fetch(url);
     if (!res.ok) throw new Error("bad response");
     const data = await res.json();
+    if (data.reloading) throw new ReloadInProgressError();
 
     allRows.push(...data.rows);
     totalCount = data.total_count;

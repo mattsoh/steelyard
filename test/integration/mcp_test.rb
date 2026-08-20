@@ -247,4 +247,42 @@ class McpTest < ActionDispatch::IntegrationTest
     assert_response :method_not_allowed
     assert_equal "POST", response.headers["Allow"]
   end
+
+  test "a leg HCB no longer has is dropped, and the match reports what it now pairs" do
+    match = Match.create!(hcb_organization_id: "org_1", discrepancy_cents: 0, created_by: @user)
+    match.match_transactions.create!(hcb_organization_id: "org_1", hcb_transaction_id: "txn_in", direction: :incoming)
+    match.match_transactions.create!(hcb_organization_id: "org_1", hcb_transaction_id: "txn_out", direction: :outgoing)
+
+    @client.remove_transaction("txn_out")
+
+    with_hcb("reader") do
+      listed = tool_payload(call_tool("list_matches", { "organization_id" => "org_1" }))
+      reported = listed["matches"].sole
+
+      # The leg is gone from the match, and the discrepancy is what the
+      # remaining one comes to -- so it now reports as unbalanced rather than
+      # claiming to balance against a transaction HCB doesn't have.
+      assert_equal [ "txn_in" ], reported["incoming_ids"]
+      assert_empty reported["outgoing_ids"]
+      assert_not reported["balanced"]
+      assert_empty reported["unresolved_ids"]
+
+      summary = tool_payload(call_tool("get_reconciliation_summary", { "organization_id" => "org_1" }))
+      assert_equal 0, summary["matches"]["balanced"]
+      assert_equal 1, summary["matches"]["unbalanced"]
+      assert_equal 0, summary["matches"]["unresolved"]
+    end
+  end
+
+  test "matches whose legs all resolve report nothing unresolved" do
+    match = Match.create!(hcb_organization_id: "org_1", discrepancy_cents: 0, created_by: @user)
+    match.match_transactions.create!(hcb_organization_id: "org_1", hcb_transaction_id: "txn_in", direction: :incoming)
+    match.match_transactions.create!(hcb_organization_id: "org_1", hcb_transaction_id: "txn_out", direction: :outgoing)
+
+    with_hcb("reader") do
+      listed = tool_payload(call_tool("list_matches", { "organization_id" => "org_1" }))
+      assert_empty listed["matches"].sole["unresolved_ids"]
+      assert_equal 0, tool_payload(call_tool("get_reconciliation_summary", { "organization_id" => "org_1" }))["matches"]["unresolved"]
+    end
+  end
 end

@@ -125,6 +125,39 @@ class OrganizationLedgerTest < ActiveSupport::TestCase
     end
   end
 
+  test "bumping the generation orphans the long-lived per-id transaction cache" do
+    with_memory_cache do
+      ledger = foreign_ledger
+
+      assert_equal(-7_500, ledger.transaction_by_id("txn_far").amount_cents)
+      key = OrganizationLedger.single_transaction_cache_key("org_1", "txn_far")
+      assert Rails.cache.read(key), "the fallback lookup should have been cached"
+
+      # These entries outlive a drain by a day, so a full reload that only
+      # cleared the drain caches would leave this one shadowing the fresh copy
+      # of a transaction it just re-fetched.
+      OrganizationLedger.bump_single_transaction_generation!("org_1")
+
+      assert_not_equal key, OrganizationLedger.single_transaction_cache_key("org_1", "txn_far")
+      assert_nil Rails.cache.read(OrganizationLedger.single_transaction_cache_key("org_1", "txn_far"))
+    end
+  end
+
+  test "a full reload's purge orphans them too" do
+    with_memory_cache do
+      client = FakeHcbClient.new(
+        transactions: @client.transactions("org_1")["data"],
+        foreign_transactions: [ { "id" => "txn_far", "date" => "2026-02-01", "memo" => "Another org", "amount_cents" => -7_500 } ]
+      )
+      OrganizationLedger.new(client, "org_1").transaction_by_id("txn_far")
+      assert Rails.cache.read(OrganizationLedger.single_transaction_cache_key("org_1", "txn_far"))
+
+      Hcb::OrganizationTransactions.new(client, "org_1").purge!
+
+      assert_nil Rails.cache.read(OrganizationLedger.single_transaction_cache_key("org_1", "txn_far"))
+    end
+  end
+
   private
 
   # The test environment runs on a null store, so every side cache a drain

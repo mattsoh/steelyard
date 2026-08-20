@@ -171,7 +171,25 @@ module Matches
       unchanged = added & removed
 
       (removed - unchanged).map { |key| leg_change("removed", key) } +
-        (added - unchanged).map { |key| leg_change("added", key) }
+        (added - unchanged).map { |key| leg_change("added", key) } +
+        dropped_leg_changes(legs)
+    end
+
+    # A leg HCB has stopped accounting for is marked rather than deleted (see
+    # Matches::Resync -- the row is what lets the same transaction coming back
+    # put the leg straight back), so it reaches the log as an update to
+    # dropped_at rather than as a destroy. The same field going the other way is
+    # that leg returning.
+    # Updates only, and only ones that actually moved the field: a leg's
+    # creation records dropped_at as [nil, nil], which is a change entry
+    # present enough to read as a transition if you don't check both ends.
+    def dropped_leg_changes(legs)
+      legs.select { |version| version.event == "update" }.filter_map do |version|
+        before, after = version.object_changes&.dig("dropped_at")
+        next if before.presence == after.presence
+
+        leg_change(after.present? ? "removed" : "restored", leg_key(version))
+      end
     end
 
     def leg_key(version)

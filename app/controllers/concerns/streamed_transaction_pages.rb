@@ -28,7 +28,11 @@ module StreamedTransactionPages
       rows: result[:data].map { |t| Hcb::TransactionPresenter.new(t).as_json },
       has_more: result[:has_more],
       next_after: result[:next_after],
-      total_count: result[:total_count]
+      total_count: result[:total_count],
+      # Passed through, not dropped: an empty page during a full reload means
+      # "wait for the drain that's rebuilding this" rather than "there are no
+      # transactions", and the client can only tell the two apart from this.
+      reloading: result[:reloading].present?
     }
   end
 

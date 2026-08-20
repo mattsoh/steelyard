@@ -417,7 +417,106 @@ class Hcb::OrganizationTransactionsTest < ActiveSupport::TestCase
 
   test "sync_state reports nothing cached before any drain has run" do
     client = FakeHcbClient.new(transactions: [])
-    assert_equal({ fetched_at: nil, count: nil }, Hcb::OrganizationTransactions.new(client, "org_1").sync_state)
+    assert_equal({ fetched_at: nil, count: nil, reloading: false }, Hcb::OrganizationTransactions.new(client, "org_1").sync_state)
+  end
+
+  test "purge! drops the baseline, so a reload can't be undone by the next ordinary redrain" do
+    transactions = (1..3).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
+    client = FakeHcbClient.new(transactions: transactions)
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+    service.all
+
+    service.purge!
+
+    # HCB has dropped one since. With the baseline still around, an incremental
+    # redrain would splice the old copy of it straight back on -- which is the
+    # stale value someone reached for a full reload to be rid of.
+    client.remove_transaction("txn_2")
+    result = Hcb::OrganizationTransactions.new(client, "org_1").all
+
+    assert_equal [ "txn_3", "txn_1" ], result.map { |t| t["id"] }
+  end
+
+  test "purge! leaves nothing of the previous drain to be answered from" do
+    client = FakeHcbClient.new(transactions: [ { "id" => "txn_1", "date" => "2026-01-01", "amount_cents" => 1 } ])
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+    service.all
+    assert service.find("txn_1")
+    assert service.presented
+    assert service.derived
+    assert service.ledger_order
+    assert service.sync_state[:fetched_at]
+
+    service.purge!
+
+    fresh = Hcb::OrganizationTransactions.new(client, "org_1")
+    assert_nil fresh.find("txn_1")
+    assert_nil fresh.presented
+    assert_nil fresh.derived
+    assert_nil fresh.ledger_order
+    assert_nil fresh.sync_state[:fetched_at]
+  end
+
+  test "a claimed full reload stops every other path from draining the same history again" do
+    transactions = (1..3).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
+    client = FakeHcbClient.new(transactions: transactions)
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+    service.claim_full_reload!("stream-1")
+    service.purge!
+
+    calls_before = client.transactions_calls
+    other = Hcb::OrganizationTransactions.new(client, "org_1")
+
+    # Nothing cached and no baseline, so without the claim check each of these
+    # would start its own full walk of the org's history -- exactly the
+    # duplicate rate-limit spend the claim exists to prevent.
+    assert_empty other.all
+    assert_equal :reloading, other.sync_head!
+
+    first_page = other.fetch_page(stream_id: "bystander")
+    assert first_page[:reloading]
+    assert_empty first_page[:data]
+
+    # Mid-stream too: a reload claimed after someone started paging must not
+    # leave them walking the whole history alongside it.
+    mid_stream = other.fetch_page(stream_id: "bystander", after: "txn_3")
+    assert mid_stream[:reloading]
+
+    assert_equal calls_before, client.transactions_calls
+    assert other.sync_state[:reloading]
+  end
+
+  test "a claimed full reload stops the background refresh being queued on top of it" do
+    client = FakeHcbClient.new(transactions: [ { "id" => "txn_1", "date" => "2026-01-01", "amount_cents" => 1 } ], user_id: 7)
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+    service.claim_full_reload!("stream-1")
+    service.purge!
+
+    # A purged cache reads as maximally stale, so without the check this would
+    # queue a redrain on every request for the whole duration of the reload --
+    # each one publishing a fetched_at the reloading tab reads as its own drain
+    # having landed.
+    assert_no_enqueued_jobs(only: WarmOrganizationTransactionsJob) do
+      Hcb::OrganizationTransactions.new(client, "org_1").all
+    end
+  end
+
+  test "the tab holding the claim still streams its reload against the purged cache" do
+    transactions = (1..3).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
+    client = FakeHcbClient.new(transactions: transactions)
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+    service.claim_full_reload!("stream-1")
+    service.purge!
+
+    first = service.fetch_page(stream_id: "stream-1", limit: 1, reload: true)
+    assert_not first[:reloading]
+    assert_equal 1, first[:data].size
+
+    second = service.fetch_page(stream_id: "stream-1", after: first[:next_after], limit: 1, reload: true)
+    service.fetch_page(stream_id: "stream-1", after: second[:next_after], limit: 1, reload: true)
+
+    assert_equal transactions.map { |t| t["id"] }, service.all.map { |t| t["id"] }
+    assert_not service.sync_state[:reloading]
   end
 
   test "reload-mode pages re-walk history from HCB rather than answering from the warm cache" do

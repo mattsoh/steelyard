@@ -36,13 +36,54 @@ class OrganizationLedger
   # contain, that shared entry was a way for one organization's request to be
   # answered with something fetched for another. Version bumped along with the
   # shape so the entries written under the old, unscoped key are never read.
-  def self.single_transaction_cache_key(organization_id, id) = "hcb:transaction:#{organization_id}:#{id}:v2"
+  def self.single_transaction_cache_key(organization_id, id)
+    "hcb:transaction:#{organization_id}:#{single_transaction_generation(organization_id)}:#{id}:v3"
+  end
+
+  # These entries are per-id and long-lived (a settled transaction doesn't
+  # change), which is exactly what makes them a problem for a full reload:
+  # dropping the whole-org drain leaves a day's worth of individually-cached
+  # transactions behind, any of which can go on shadowing the fresh copy.
+  #
+  # Deleting them one by one isn't possible -- the ids aren't enumerable from
+  # here, and delete_matched isn't something every cache store implements
+  # (Solid Cache raises on it). So the generation goes *in the key*: bumping it
+  # orphans every entry written under the old one in a single write, whatever
+  # the store, and they age out on their own TTL.
+  #
+  # Held far longer than SINGLE_TRANSACTION_TTL on purpose. If the generation
+  # expired first, keys would fall back to the default and could start reading
+  # the very entries a bump orphaned.
+  SINGLE_TRANSACTION_GENERATION_TTL = 30.days
+
+  def self.single_transaction_generation_key(organization_id) = "hcb:transaction:#{organization_id}:generation"
+
+  def self.single_transaction_generation(organization_id)
+    Rails.cache.read(single_transaction_generation_key(organization_id)) || "0"
+  end
+
+  # A fresh random token rather than a counter: incrementing needs a read and a
+  # write to agree, and two reloads racing on that would land on the same
+  # generation -- where two racing writes of different tokens just both work.
+  def self.bump_single_transaction_generation!(organization_id)
+    Rails.cache.write(
+      single_transaction_generation_key(organization_id),
+      SecureRandom.hex(4),
+      expires_in: SINGLE_TRANSACTION_GENERATION_TTL
+    )
+  end
 
   def initialize(client, organization_id)
     @client = client
     @organization_id = organization_id
     @hcb_transactions = Hcb::OrganizationTransactions.new(client, organization_id)
   end
+
+  # Whether a full reload is currently rebuilding this organization's history,
+  # in which case there is deliberately nothing to read -- see
+  # Hcb::OrganizationTransactions#purge!. Distinguishes "being rebuilt" from
+  # "empty", which every count and balance here would otherwise report the same.
+  def reloading? = @hcb_transactions.full_reload_running?
 
   # Oldest-first. Declined transactions are excluded entirely -- they never
   # moved money, so they'd corrupt the running balance and can't be matched.

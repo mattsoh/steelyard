@@ -138,8 +138,12 @@ function matchChangeHtml(c) {
     const label = t
       ? `${escapeHtml(t.date)} — ${escapeHtml(t.memo)} — ${fmtDetail(t.amount)}`
       : escapeHtml(String(c.transaction_id));
-    const verb = c.action === "added" ? "Added" : "Removed";
-    const sign = c.action === "added" ? "+" : "−";
+    // "restored" is a leg HCB stopped accounting for and then accounted for
+    // again -- the transaction was remapped away and back. Reads as a return
+    // rather than a plain add, because the match paired it all along.
+    const back = c.action === "restored";
+    const verb = c.action === "added" ? "Added" : back ? "Restored" : "Removed";
+    const sign = c.action === "added" || back ? "+" : "−";
     return `<li class="match-change match-change-${escapeHtml(c.action)}"><span class="match-change-sign">${sign}</span>${verb} ${escapeHtml(c.direction)}: ${label}</li>`;
   }
   if (c.kind === "adjustment") {
