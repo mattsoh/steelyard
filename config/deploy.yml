@@ -43,6 +43,12 @@ env:
     # update alongside proxy.host when the production domain is decided.
     HCB_OAUTH_REDIRECT_URI: https://app.example.com/auth/hcb/callback
 
+    # Any *further* hostnames the app answers to, comma-separated. The host of
+    # HCB_OAUTH_REDIRECT_URI above is trusted automatically, so this is only for
+    # extras (a preview deploy, a tunnel). See config/environments/production.rb
+    # for why Host validation matters to the OAuth endpoints in particular.
+    # APP_HOST: app.example.com,preview.example.com
+
     # Run the Solid Queue Supervisor inside the web server's Puma process to do jobs.
     # When you start using multiple servers, you should split out job processing to a dedicated machine.
     SOLID_QUEUE_IN_PUMA: true

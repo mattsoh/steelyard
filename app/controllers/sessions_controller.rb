@@ -39,8 +39,15 @@ class SessionsController < ApplicationController
       name: identity["name"]
     )
 
+    # Fresh session id for the newly-authenticated session, so a session cookie
+    # planted on the visitor before login (a shared machine, a fixation attempt)
+    # isn't the one that ends up holding an authenticated user_id. Everything
+    # worth keeping across the boundary has to be read out first -- which is only
+    # where to send them, parked before they were sent off to HCB.
+    destination = return_path_after_login
+    reset_session
     session[:user_id] = user.id
-    redirect_to return_path_after_login
+    redirect_to destination
   rescue OAuth2::Error => e
     render_login_error("Login with HCB failed: #{e.message}")
   end

@@ -16,19 +16,19 @@ module Hcb
     def organizations = get("/api/v4/user/organizations")
 
     def organization(id, expand: [])
-      get("/api/v4/organizations/#{id}", **(expand.any? ? { expand: expand } : {}))
+      get("/api/v4/organizations/#{segment(id)}", **(expand.any? ? { expand: expand } : {}))
     end
 
     def transactions(organization_id, after: nil, limit: 100, filters: {})
       get(
-        "/api/v4/organizations/#{organization_id}/transactions",
+        "/api/v4/organizations/#{segment(organization_id)}/transactions",
         after: after,
         limit: limit,
         filters: filters
       )
     end
 
-    def transaction(id) = get("/api/v4/transactions/#{id}")
+    def transaction(id) = get("/api/v4/transactions/#{segment(id)}")
 
     # HCB serves comments off a shallow, query-parameterized route rather than
     # nesting them under the transaction: /api/v4/transactions/:id/comments
@@ -37,6 +37,22 @@ module Hcb
     def comments(transaction_id) = get("/api/v4/comments", transaction_id: transaction_id)
 
     private
+
+    # An id or slug going into a URL *path*, escaped.
+    #
+    # Query values are escaped for us on the way out; path segments are plain
+    # string interpolation, and the ids reaching these methods include route
+    # parameters straight off the wire. Rails' router unescapes a segment after
+    # matching it, so `/api/v1/organizations/a%2F..%2F..%2Fadmin/transactions`
+    # arrives as `params[:organization_id] == "a/../../admin"` -- interpolated
+    # raw, and normalized by the HTTP client, that addresses an HCB endpoint
+    # other than the one this method names. Nothing worse than the caller's own
+    # token can reach today (every request here is a GET made with the signed-in
+    # user's own HCB credentials, so it can only read what they could read from
+    # HCB directly), which is the only reason this isn't urgent -- but "the
+    # caller picks the endpoint" is not a property to leave lying around for the
+    # first method here that writes something.
+    def segment(value) = ERB::Util.url_encode(value.to_s)
 
     def get(path, **params)
       response = access_token.get(path, params: params.compact)

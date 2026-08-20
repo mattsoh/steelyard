@@ -36,4 +36,31 @@ class Hcb::ClientTest < ActiveSupport::TestCase
 
     assert_equal [ { "content" => "looks right to me" } ], client_with(token).comments("txn_1")
   end
+
+  # Rails' router unescapes a path segment after matching it, so a request for
+  # /api/v1/organizations/a%2F..%2F..%2Fadmin/transactions arrives here as the id
+  # "a/../../admin". Interpolated raw, and then normalized by the HTTP client,
+  # that addresses an HCB endpoint other than the one the method names -- so the
+  # caller would be choosing the route, not this class.
+  test "an id carrying path separators can't escape the route it's interpolated into" do
+    token = RecordingAccessToken.new("{}")
+    client_with(token).organization("a/../../admin")
+
+    path, _params = token.requests.sole
+    assert_equal "/api/v4/organizations/a%2F..%2F..%2Fadmin", path
+  end
+
+  test "the same holds for a transaction id" do
+    token = RecordingAccessToken.new("{}")
+    client_with(token).transaction("../organizations")
+
+    assert_equal "/api/v4/transactions/..%2Forganizations", token.requests.sole.first
+  end
+
+  test "an ordinary id or slug is left readable" do
+    token = RecordingAccessToken.new("{}")
+    client_with(token).organization("hq-clearinghouse")
+
+    assert_equal "/api/v4/organizations/hq-clearinghouse", token.requests.sole.first
+  end
 end

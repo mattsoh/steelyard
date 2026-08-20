@@ -6,7 +6,7 @@
 <title><%= content_for(:title) || "Steelyard" %></title>
 <%= csrf_meta_tags %>
 <%= render "shared/favicons" %>
-<script>
+<script nonce="<%= content_security_policy_nonce %>">
   window.HCB_ORGANIZATION_ID = <%= raw organization_id.to_json %>;
   <%# The slug (falling back to the id) is what the shareable match links are
       built from, so a link copied out of the popup reads the same as the URL

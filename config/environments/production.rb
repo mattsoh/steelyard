@@ -81,13 +81,20 @@ Rails.application.configure do
 
   # Enable DNS rebinding protection and other `Host` header attacks.
   #
-  # Driven by APP_HOST (comma-separated) rather than hardcoded because the
-  # production domain isn't settled yet -- see config/deploy.yml. This matters
-  # more here than in a plain Rails app: the OAuth discovery document and the
-  # issuer/endpoint URLs in it are built from request.base_url, so an
-  # unvalidated Host header is echoed back to clients as the authorization
-  # server's own address.
-  hosts = ENV.fetch("APP_HOST", "").split(",").map(&:strip).reject(&:blank?)
+  # This matters more here than in a plain Rails app: the OAuth discovery
+  # documents, the issuer/endpoint URLs in them, and the WWW-Authenticate
+  # challenge that starts a connector's login are all built from
+  # request.base_url (see Oauth::Metadata), so an unvalidated Host header is
+  # echoed back to clients as this authorization server's own address.
+  #
+  # APP_HOST (comma-separated) lists the names the app answers to. It falls back
+  # to the host of HCB_OAUTH_REDIRECT_URI, which is not optional -- the app
+  # can't serve a login without it, and it has to match a URI registered on the
+  # HCB OAuth application -- so this protection can't quietly be off for want of
+  # a second setting that nothing else would miss.
+  hosts = ENV.fetch("APP_HOST", "").split(",").map(&:strip)
+  hosts << (URI.parse(ENV["HCB_OAUTH_REDIRECT_URI"].to_s).host rescue nil)
+  hosts = hosts.reject(&:blank?).uniq
   if hosts.any?
     config.hosts = hosts
     # The load balancer health-checks by IP, before any Host is resolved.
