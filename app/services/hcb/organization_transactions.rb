@@ -68,10 +68,21 @@ module Hcb
 
     # How long a claimed full reload blocks another one from being queued --
     # comfortably longer than a full-history drain takes, since the point is to
-    # stop a second one being queued *while the first is still running*. The job
-    # releases the claim as soon as it's done, so this only matters if the job
-    # dies without ever finishing.
+    # stop a second one being queued *while the first is still running*. The
+    # claim is released as soon as the drain lands, so this only matters if
+    # whoever held it died without ever finishing.
     FULL_RELOAD_LOCK_TTL = 15.minutes
+
+    # How long a browser-driven full reload can go without asking for a page
+    # before the fallback job stops waiting and finishes the drain itself.
+    #
+    # A full reload is streamed to whoever asked for it (see #fetch_page's
+    # reload mode) so they can watch it arrive rather than a spinner, and every
+    # page it pulls touches the claim. That heartbeat is the difference between
+    # "still being driven" and "the tab is gone": generous enough to cover one
+    # slow page against a large organization, short enough that an abandoned
+    # reload is picked up rather than lost.
+    FULL_RELOAD_HEARTBEAT_TIMEOUT = ENV.fetch("HCB_FULL_RELOAD_HEARTBEAT_TIMEOUT", 90).to_i.seconds
 
     # What #refresh_one! hands back: the same transaction as the cache had it
     # and as HCB has it now, for callers that want to report what changed.
@@ -204,9 +215,56 @@ module Hcb
     # people mashing the button -- or one person with two tabs open -- can't
     # queue two full-history drains against the rate limit at once. The loser
     # just watches the winner's drain land, which is the same result.
-    def claim_full_reload! = Rails.cache.write(full_reload_lock_key, true, expires_in: FULL_RELOAD_LOCK_TTL, unless_exist: true)
+    #
+    # The claim names the stream that owns it, which is what stops a full
+    # re-walk from being something any caller can ask for at will: reload mode
+    # is only honoured for the stream_id recorded here (see
+    # #full_reload_stream?), so the drain the winner is being served can't be
+    # started a second time alongside it.
+    def claim_full_reload!(stream_id)
+      Rails.cache.write(
+        full_reload_lock_key,
+        { stream_id: stream_id, touched_at: Time.now },
+        expires_in: FULL_RELOAD_LOCK_TTL, unless_exist: true
+      )
+    end
 
     def release_full_reload! = Rails.cache.delete(full_reload_lock_key)
+
+    def full_reload_claim = Rails.cache.read(full_reload_lock_key)
+
+    # Whether this stream is the one holding the current claim, and so may ask
+    # for reload-mode pages.
+    def full_reload_stream?(stream_id)
+      claim = full_reload_claim
+      claim.is_a?(Hash) && stream_id.present? && claim[:stream_id] == stream_id
+    end
+
+    # Finishes a full reload whose browser stopped driving it -- the fallback
+    # behind #fetch_page's reload mode, run from
+    # WarmOrganizationTransactionsJob.
+    #
+    # Streaming a reload to the tab that asked for it is what makes it watchable
+    # instead of a blank page for minutes, but it also means the drain only
+    # progresses while that tab is open. This is the other half: the pages the
+    # stream already fetched are sitting in its buffer, so finishing means
+    # picking up from the last one rather than starting the walk again.
+    #
+    #   :done     -- the claim is gone, so the stream published and released it
+    #   :running  -- still being driven; the caller should check back rather
+    #                than drain alongside it and spend the rate limit twice
+    #   :resumed  -- taken over and published from here
+    def resume_full_reload!(stream_id)
+      claim = full_reload_claim
+      return :done if claim.nil?
+      return :running if claim.is_a?(Hash) && claim[:touched_at] && Time.now - claim[:touched_at] < FULL_RELOAD_HEARTBEAT_TIMEOUT
+
+      buffered = Rails.cache.read(buffer_key(stream_id)) || []
+      publish(buffered + drain(after: buffered.last && buffered.last["id"]))
+      Rails.cache.delete(buffer_key(stream_id))
+      release_full_reload!
+      :resumed
+    end
 
     # Cheap "did anything land on HCB since the last drain?" check, for a page
     # load or an explicit user-triggered refresh. Pulls just one page -- the
@@ -280,8 +338,22 @@ module Hcb
     # comes back, the accumulated result is written to the same cache_key
     # #all reads, so the caller's next request for the fully-computed view
     # doesn't re-drain from scratch.
-    def fetch_page(stream_id:, after: nil, limit: PAGE_SIZE)
-      if after.blank?
+    # `reload: true` is the user-requested full reload being streamed rather
+    # than waited on: it skips both short-circuits above -- the cached result
+    # and the baseline are exactly what someone reaching for a full reload has
+    # decided not to trust -- and raw-pages the whole history into the stream's
+    # buffer, publishing only once the last page lands. So the tab that asked
+    # watches rows arrive instead of sitting on a cleared page for minutes,
+    # while a partial walk still never becomes the authoritative result.
+    #
+    # Every reload page touches the claim, which is what lets
+    # #resume_full_reload! tell a stream still being driven from a closed tab.
+    # Callers must check #full_reload_stream? first; reload mode is only for the
+    # stream holding the claim.
+    def fetch_page(stream_id:, after: nil, limit: PAGE_SIZE, reload: false)
+      if reload
+        touch_full_reload!(stream_id)
+      elsif after.blank?
         cached = cached_result
         return { data: cached, has_more: false, next_after: nil, total_count: cached.size } if cached
 
@@ -301,16 +373,33 @@ module Hcb
       buffered = (Rails.cache.read(buffer_key(stream_id)) || []) + data
 
       if has_more
-        Rails.cache.write(buffer_key(stream_id), buffered, expires_in: 2.minutes)
+        # A reload's buffer has to outlive the gaps between its pages by enough
+        # that the fallback job can still pick the walk up where it stopped, so
+        # it's kept for as long as the claim itself rather than the couple of
+        # minutes an ordinary stream needs.
+        Rails.cache.write(buffer_key(stream_id), buffered, expires_in: reload ? FULL_RELOAD_LOCK_TTL : 2.minutes)
       else
         publish(buffered)
         Rails.cache.delete(buffer_key(stream_id))
+        release_full_reload! if reload
       end
 
       { data: data, has_more: has_more, next_after: has_more ? data.last["id"] : nil, total_count: raw["total_count"] }
     end
 
     private
+
+    # Re-stamps the claim so #resume_full_reload! can see the stream is still
+    # being driven. Rewritten rather than merged: the claim belongs to this
+    # stream (the caller checked #full_reload_stream?), and the only field on it
+    # that moves is the heartbeat.
+    def touch_full_reload!(stream_id)
+      Rails.cache.write(
+        full_reload_lock_key,
+        { stream_id: stream_id, touched_at: Time.now },
+        expires_in: FULL_RELOAD_LOCK_TTL
+      )
+    end
 
     def buffer_key(stream_id) = "#{cache_key}:buffer:#{stream_id}"
 
@@ -511,9 +600,11 @@ module Hcb
       incremental_drain(Rails.cache.read(baseline_key))
     end
 
-    def drain
+    # `after` lets a caller pick the walk up mid-history rather than from the
+    # newest transaction -- see #resume_full_reload!, which continues from the
+    # last page an abandoned reload stream had already fetched.
+    def drain(after: nil)
       results = []
-      after = nil
 
       loop do
         page = self.page(after: after, limit: PAGE_SIZE)

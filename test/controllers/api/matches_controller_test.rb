@@ -413,4 +413,43 @@ class Api::MatchesControllerTest < ActionController::TestCase
       ]
     )
   end
+
+  test "index reports which matches the resync moved, not just the corrected numbers" do
+    match = Match.create!(hcb_organization_id: "org_1", discrepancy_cents: 0, created_by: @user)
+    match.match_transactions.create!(hcb_organization_id: "org_1", hcb_transaction_id: "txn_in", direction: :incoming)
+    match.match_transactions.create!(hcb_organization_id: "org_1", hcb_transaction_id: "txn_out", direction: :outgoing)
+
+    # HCB restates the outgoing leg -- the match was confirmed as balanced and
+    # silently isn't any more, which is exactly what someone reaching for a sync
+    # or a full reload is trying to find out.
+    @fake_client.update_transaction("txn_out", "amount_cents" => -9_000)
+
+    Hcb::Client.stub :new, @fake_client do
+      stub_membership("reader") do
+        get :index, params: { organization_id: "org_1" }
+      end
+    end
+
+    assert_response :success
+    resynced = JSON.parse(response.body)["resynced"]
+    assert_equal 1, resynced.size
+    assert_equal match.id, resynced.first["id"]
+    assert_equal 0.0, resynced.first["from"]
+    assert_equal 10.0, resynced.first["to"]
+    assert_equal 1_000, match.reload.discrepancy_cents
+  end
+
+  test "index reports nothing resynced when every match still adds up" do
+    match = Match.create!(hcb_organization_id: "org_1", discrepancy_cents: 0, created_by: @user)
+    match.match_transactions.create!(hcb_organization_id: "org_1", hcb_transaction_id: "txn_in", direction: :incoming)
+    match.match_transactions.create!(hcb_organization_id: "org_1", hcb_transaction_id: "txn_out", direction: :outgoing)
+
+    Hcb::Client.stub :new, @fake_client do
+      stub_membership("reader") do
+        get :index, params: { organization_id: "org_1" }
+      end
+    end
+
+    assert_empty JSON.parse(response.body)["resynced"]
+  end
 end

@@ -13,13 +13,21 @@ class Api::MatchesController < ApplicationController
     # bucket the frontend sorts on -- is re-derived from current amounts before
     # serializing. This is the check that covers a plain page load and the
     # reload that follows a sync; the single-transaction refresh runs its own.
-    Matches::Resync.new(ledger: ledger, matches: matches).call
+    #
+    # What it moved is reported alongside the matches, not just written. A full
+    # reload exists precisely because someone suspects an older transaction
+    # changed, and a match that quietly stopped balancing is the answer they
+    # were looking for -- so it says which ones rather than leaving the numbers
+    # to shift unannounced. Same shape as the single-transaction refresh's
+    # matches_changed (Api::TransactionsController#refresh_one), in dollars.
+    resynced = Matches::Resync.new(ledger: ledger, matches: matches).call
+      .map { |change| { id: change.match.id, from: change.from_cents / 100.0, to: change.to_cents / 100.0 } }
 
     # One query for the whole page (see Matches::History.for_matches), which is
     # what lets every row say who last touched it without a query per row.
     histories = Matches::History.for_matches(matches)
 
-    render json: { matches: matches.map { |m| serialize(m, ledger, history: histories[m.id]) } }
+    render json: { matches: matches.map { |m| serialize(m, ledger, history: histories[m.id]) }, resynced: resynced }
   end
 
   # Everything about one match, for the detail popup: its legs as full

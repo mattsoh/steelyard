@@ -174,6 +174,7 @@ async function load() {
   }
 
   applyMatches(matchData.matches);
+  lastResynced = matchData.resynced || [];
 
   // Keep the zero-point row (as a reference) and everything after it,
   // then show newest first.
@@ -212,6 +213,7 @@ async function reloadInPlace() {
   }
 
   applyMatches(matchData.matches);
+  lastResynced = matchData.resynced || [];
 
   const zeroIdx = data.ledger.findIndex((r) => r.is_zero_point);
   const kept = zeroIdx >= 0 ? data.ledger.slice(zeroIdx) : data.ledger;
@@ -263,6 +265,17 @@ async function reloadMatches() {
 }
 
 let transactionsRefreshing = false;
+// Matches whose discrepancy the server re-derived on the last load, because the
+// HCB transactions behind them had changed value (see Matches::Resync). Said
+// out loud rather than left to move the numbers quietly: a match that stopped
+// balancing is usually the very thing a sync or full reload was reaching for.
+let lastResynced = [];
+
+function resyncNote() {
+  if (!lastResynced.length) return "";
+  const n = lastResynced.length;
+  return ` — ${n} match${n === 1 ? "" : "es"} no longer balance${n === 1 ? "s" : ""} (amounts changed on HCB)`;
+}
 
 function setSyncNote(text) {
   document.getElementById("sync-note").textContent = text;
@@ -348,8 +361,19 @@ async function fullReloadTransactionsAndRender() {
     const changed = await fullReloadTransactions({
       onSyncing: () => {
         started = true;
-        setSyncNote("re-reading full history from HCB — this can take a few minutes…");
+        setSyncNote("re-reading full history from HCB — rows appear as they arrive…");
         clearForFullReload();
+      },
+      // clearForFullReload emptied `provisional`, so the reload's pages render
+      // into the same provisional table an ordinary load streams into -- same
+      // caveat as there: running balance and the zero point aren't knowable
+      // until the whole history is in, so load() below does the authoritative
+      // render once the drain has landed.
+      onPage: (rows, totalCount) => {
+        provisional.push(...rows.map((r) => ({ ...r, running_balance: null, is_zero_point: false })));
+        provisional.sort(byDateDesc);
+        lastTotalCount = totalCount;
+        renderProvisional(totalCount);
       },
     });
     // Nothing was cleared and nothing is running: the request itself failed, so
@@ -367,7 +391,7 @@ async function fullReloadTransactionsAndRender() {
       setSyncNote("full reload finished, but this page couldn't load it — reload the page");
       return;
     }
-    setSyncNote(changed ? "full reload complete" : "still running — reload this page in a few minutes to see the result");
+    setSyncNote(changed ? `full reload complete${resyncNote()}` : "still running — reload this page in a few minutes to see the result");
   } finally {
     transactionsRefreshing = false;
     setSyncButtonsDisabled(false);

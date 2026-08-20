@@ -1,6 +1,7 @@
 class Api::TransactionsController < ApplicationController
   include OrganizationScoped
   include RawJsonRendering
+  include StreamedTransactionPages
 
   # The matcher's working set: transactions after the zero-balance cutoff,
   # plus anything referenced by a still-visible match (which may predate the
@@ -28,15 +29,7 @@ class Api::TransactionsController < ApplicationController
   # One HCB page at a time, so the frontend can render rows as they arrive
   # instead of blocking on the full drain #index needs for cutoff filtering.
   def page
-    result = Hcb::OrganizationTransactions.new(hcb_client, organization_id)
-      .fetch_page(stream_id: params[:stream_id].to_s, after: params[:after].presence)
-
-    render json: {
-      rows: result[:data].map { |t| Hcb::TransactionPresenter.new(t).as_json },
-      has_more: result[:has_more],
-      next_after: result[:next_after],
-      total_count: result[:total_count]
-    }
+    render_streamed_page
   end
 
   # Cheap "did anything land on HCB since we last drained?" check -- see
@@ -85,17 +78,35 @@ class Api::TransactionsController < ApplicationController
 
   # Full-history redrain, on explicit request -- one HCB request per 100
   # transactions of the org's *entire* history, against a rate limit shared by
-  # everyone using this app, which is why the UI warns first. Handed to the
-  # background job rather than run inline (the drain outlives any reasonable
-  # request timeout on a large org) and claimed under a lock, so two people
-  # asking at once still only costs one drain. Either way the caller polls
-  # #sync_status and reloads when a newer drain lands.
+  # everyone using this app, which is why the UI warns first.
+  #
+  # Claimed under a lock, so two people asking at once still only costs one
+  # drain. The winner is handed the stream_id that claim is recorded against and
+  # streams the walk itself through #page's reload mode, rendering pages as they
+  # land instead of watching a cleared screen for minutes. The loser gets no
+  # stream and falls back to polling #sync_status for the drain that's already
+  # running -- which is the same result, just without the running commentary.
+  #
+  # A background job is queued behind the stream rather than instead of it: if
+  # the tab driving the walk goes away mid-history, WarmOrganizationTransactions
+  # Job finishes it from the pages already buffered, so an abandoned reload
+  # costs time rather than the whole walk.
   def reload
     transactions = Hcb::OrganizationTransactions.new(hcb_client, organization_id)
-    claimed = transactions.claim_full_reload!
-    WarmOrganizationTransactionsJob.perform_later(current_user.id, organization_id, full: true) if claimed
+    stream_id = SecureRandom.uuid
+    claimed = transactions.claim_full_reload!(stream_id)
 
-    render json: { status: claimed ? "started" : "already_running", **transactions.sync_state }
+    if claimed
+      WarmOrganizationTransactionsJob
+        .set(wait: WarmOrganizationTransactionsJob::FALLBACK_DELAY)
+        .perform_later(current_user.id, organization_id, full: true, stream_id: stream_id)
+    end
+
+    render json: {
+      status: claimed ? "started" : "already_running",
+      stream_id: claimed ? stream_id : nil,
+      **transactions.sync_state
+    }
   end
 
   # Progress poll for the background redrain #refresh hands off. Reads local

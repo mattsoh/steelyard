@@ -150,4 +150,71 @@ class Api::TransactionsControllerTest < ActionController::TestCase
     assert body["fetched_at"]
     assert_equal calls_before, fake_client.transactions_calls
   end
+
+  test "reload hands the winning tab a stream to drive, and queues the job behind it" do
+    fake_client = FakeHcbClient.new(transactions: [ { "id" => "txn_1", "date" => "2026-01-01", "amount_cents" => 1 } ])
+
+    Hcb::Client.stub :new, fake_client do
+      stub_membership("reader") do
+        assert_enqueued_with(job: WarmOrganizationTransactionsJob) do
+          post :reload, params: { organization_id: "org_1" }
+        end
+      end
+    end
+
+    assert_response :success
+    body = JSON.parse(response.body)
+    assert_equal "started", body["status"]
+    # The stream_id is what lets the tab ask for reload-mode pages and render
+    # the walk as it arrives instead of polling a cleared page.
+    assert body["stream_id"].present?
+  end
+
+  test "a second tab asking for a reload gets no stream and waits for the one already running" do
+    fake_client = FakeHcbClient.new(transactions: [ { "id" => "txn_1", "date" => "2026-01-01", "amount_cents" => 1 } ])
+
+    Hcb::Client.stub :new, fake_client do
+      stub_membership("reader") do
+        post :reload, params: { organization_id: "org_1" }
+        post :reload, params: { organization_id: "org_1" }
+      end
+    end
+
+    body = JSON.parse(response.body)
+    assert_equal "already_running", body["status"]
+    assert_nil body["stream_id"]
+  end
+
+  test "a reload-mode page from a stream that doesn't hold the claim is refused" do
+    fake_client = FakeHcbClient.new(transactions: [ { "id" => "txn_1", "date" => "2026-01-01", "amount_cents" => 1 } ])
+
+    Hcb::Client.stub :new, fake_client do
+      stub_membership("reader") do
+        post :reload, params: { organization_id: "org_1" }
+        # Without this check, a full re-walk of the org's entire history would
+        # be something any caller could ask for at will.
+        get :page, params: { organization_id: "org_1", stream_id: "not-the-winner", reload: "1" }
+      end
+    end
+
+    assert_response :conflict
+  end
+
+  test "the tab holding the claim streams reload-mode pages" do
+    transactions = (1..3).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
+    fake_client = FakeHcbClient.new(transactions: transactions)
+
+    Hcb::Client.stub :new, fake_client do
+      stub_membership("reader") do
+        post :reload, params: { organization_id: "org_1" }
+        stream_id = JSON.parse(response.body)["stream_id"]
+        get :page, params: { organization_id: "org_1", stream_id: stream_id, reload: "1", limit: 1 }
+      end
+    end
+
+    assert_response :success
+    body = JSON.parse(response.body)
+    assert_equal 3, body["rows"].size
+    assert_not body["has_more"]
+  end
 end

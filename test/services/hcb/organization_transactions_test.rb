@@ -420,6 +420,112 @@ class Hcb::OrganizationTransactionsTest < ActiveSupport::TestCase
     assert_equal({ fetched_at: nil, count: nil }, Hcb::OrganizationTransactions.new(client, "org_1").sync_state)
   end
 
+  test "reload-mode pages re-walk history from HCB rather than answering from the warm cache" do
+    transactions = (1..3).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
+    client = FakeHcbClient.new(transactions: transactions)
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+    service.all # cache and baseline both warm now
+
+    assert service.claim_full_reload!("stream-1")
+    calls_before = client.transactions_calls
+
+    first = service.fetch_page(stream_id: "stream-1", limit: 1, reload: true)
+
+    # The whole point of a full reload is not trusting what's cached, so the
+    # short-circuits an ordinary stream takes have to be skipped: one page's
+    # worth of rows, and a request actually made for them.
+    assert_equal 1, first[:data].size
+    assert first[:has_more]
+    assert_equal 1, client.transactions_calls - calls_before
+  end
+
+  test "a reload-mode stream publishes only once its last page lands" do
+    transactions = (1..3).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
+    client = FakeHcbClient.new(transactions: transactions)
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+    service.claim_full_reload!("stream-1")
+
+    first = service.fetch_page(stream_id: "stream-1", limit: 1, reload: true)
+    # A partial walk must not become the authoritative result -- a drain missing
+    # its older half is a wrong running balance for every row above it.
+    assert_nil service.sync_state[:fetched_at]
+
+    second = service.fetch_page(stream_id: "stream-1", after: first[:next_after], limit: 1, reload: true)
+    assert_nil service.sync_state[:fetched_at]
+
+    service.fetch_page(stream_id: "stream-1", after: second[:next_after], limit: 1, reload: true)
+
+    assert_equal 3, service.sync_state[:count]
+    assert_equal transactions.map { |t| t["id"] }, service.all.map { |t| t["id"] }
+    # Released on the way out, so the next reload can be claimed.
+    assert_nil service.full_reload_claim
+  end
+
+  test "reload mode is only offered to the stream holding the claim" do
+    service = Hcb::OrganizationTransactions.new(FakeHcbClient.new(transactions: []), "org_1")
+
+    assert service.claim_full_reload!("stream-1")
+    assert service.full_reload_stream?("stream-1")
+    # Another tab asking for a full re-walk of its own would double the cost
+    # against a rate limit the whole organization shares.
+    assert_not service.full_reload_stream?("stream-2")
+    assert_not service.full_reload_stream?("")
+    # And nobody else can claim it while it's held.
+    assert_not service.claim_full_reload!("stream-2")
+  end
+
+  test "resume_full_reload! finishes an abandoned stream from the pages it had already buffered" do
+    transactions = (1..5).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
+    client = FakeHcbClient.new(transactions: transactions)
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+    service.claim_full_reload!("stream-1")
+
+    # Two pages in, then the tab goes away.
+    first = service.fetch_page(stream_id: "stream-1", limit: 2, reload: true)
+    service.fetch_page(stream_id: "stream-1", after: first[:next_after], limit: 2, reload: true)
+    assert_nil service.sync_state[:fetched_at]
+
+    calls_before = client.transactions_calls
+    outcome = travel(Hcb::OrganizationTransactions::FULL_RELOAD_HEARTBEAT_TIMEOUT + 1.second) do
+      service.resume_full_reload!("stream-1")
+    end
+
+    assert_equal :resumed, outcome
+    # Picked up where the stream stopped rather than starting the walk again:
+    # one more request finishes the remaining transaction.
+    assert_equal 1, client.transactions_calls - calls_before
+    assert_equal transactions.map { |t| t["id"] }, service.all.map { |t| t["id"] }
+    assert_nil service.full_reload_claim
+  end
+
+  test "resume_full_reload! leaves a stream that is still being driven alone" do
+    transactions = (1..5).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
+    client = FakeHcbClient.new(transactions: transactions)
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+    service.claim_full_reload!("stream-1")
+    service.fetch_page(stream_id: "stream-1", limit: 2, reload: true)
+
+    calls_before = client.transactions_calls
+
+    # Draining alongside a live stream would spend the shared rate limit twice
+    # over on the same history.
+    assert_equal :running, service.resume_full_reload!("stream-1")
+    assert_equal calls_before, client.transactions_calls
+    assert_nil service.sync_state[:fetched_at]
+  end
+
+  test "resume_full_reload! is a no-op once the stream has published and released" do
+    client = FakeHcbClient.new(transactions: [ { "id" => "txn_1", "date" => "2026-01-01", "amount_cents" => 1 } ])
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+    service.claim_full_reload!("stream-1")
+    service.fetch_page(stream_id: "stream-1", reload: true)
+
+    calls_before = client.transactions_calls
+
+    assert_equal :done, service.resume_full_reload!("stream-1")
+    assert_equal calls_before, client.transactions_calls
+  end
+
   test "fetch_page buffers concurrent drains separately by stream_id" do
     client = FakeHcbClient.new(
       transactions: [

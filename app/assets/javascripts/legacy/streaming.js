@@ -99,12 +99,24 @@ async function syncNewTransactions({ onSyncing } = {}) {
 // the server has actually published fresher data, and never throws. Unlike it,
 // this doesn't try to keep the current rows usable while it runs -- everything
 // the drain is replacing is exactly what someone reaching for this button has
-// decided not to trust, so onSyncing is where callers clear their view and
-// re-load it from scratch once this resolves. onSyncing firing is also the
-// signal that the server accepted the reload: it's skipped entirely when the
-// request itself failed, so a caller can tell "never started" from "started and
-// still running".
-async function fullReloadTransactions({ onSyncing } = {}) {
+// decided not to trust, so onSyncing is where callers clear their view before
+// the fresh copy starts arriving. onSyncing firing is also the signal that the
+// server accepted the reload: it's skipped entirely when the request itself
+// failed, so a caller can tell "never started" from "started and still running".
+//
+// When this tab is the one that won the claim, it drives the walk itself and
+// calls onPage for every page as it lands, so a reload of a large organization
+// fills the view in as it goes instead of leaving it blank for minutes. Losing
+// the claim (another tab, or someone else, got there first) means someone else
+// is already driving the same drain, so there's nothing to render page by page
+// and this falls back to waiting for their result.
+//
+// Giving up on the stream isn't giving up on the reload: a background job is
+// queued behind it server-side, so a stream that breaks mid-history is picked
+// up and finished from the pages already buffered. That's why every bail-out
+// here goes to waitForNewerDrain rather than returning false -- the drain is
+// still coming.
+async function fullReloadTransactions({ onSyncing, onPage } = {}) {
   let started;
   try {
     const res = await fetch(`${orgApiBase()}/api/transactions/reload`, { method: "POST" });
@@ -116,9 +128,23 @@ async function fullReloadTransactions({ onSyncing } = {}) {
 
   invalidateCachedTransactionRows();
   if (onSyncing) onSyncing();
-  // "already_running" (someone else, or another tab, got there first) is
-  // handled the same way: the drain we're waiting on is the one they started.
-  return waitForNewerDrain(started.fetched_at, FULL_RELOAD_POLL_TIMEOUT_MS);
+
+  // "already_running": no stream_id, because the claim (and the walk) belongs
+  // to whoever started it. Wait for the drain they're driving.
+  if (!started.stream_id || !onPage) {
+    return waitForNewerDrain(started.fetched_at, FULL_RELOAD_POLL_TIMEOUT_MS);
+  }
+
+  try {
+    await loadPagesStreaming(`${orgApiBase()}/api/transactions/page`, onPage, {
+      params: { reload: "1" },
+      streamId: started.stream_id,
+      useCache: false,
+    });
+    return true;
+  } catch {
+    return waitForNewerDrain(started.fetched_at, FULL_RELOAD_POLL_TIMEOUT_MS);
+  }
 }
 
 // Shown before a full reload is started, on both pages. Deliberately blunt
@@ -158,14 +184,21 @@ async function waitForNewerDrain(startedFetchedAt, timeoutMs = SYNC_POLL_TIMEOUT
 // requests on a cold cache) is still running, instead of blocking on one long
 // request. Once the page loop is done, the server's transaction cache is warm,
 // so the caller's follow-up request for the fully-computed view is fast.
-async function loadPagesStreaming(pageUrl, onPage) {
-  const cached = readCachedTransactionRows();
-  if (cached) {
-    onPage(cached.rows, cached.totalCount);
-    return;
+// `useCache: false` and an explicit `streamId` are what a full reload streams
+// with: it must not be answered from the client-side row cache (re-reading
+// history is the whole point), and the server only honours reload-mode pages
+// for the stream_id its claim was recorded against, so the id can't be minted
+// here.
+async function loadPagesStreaming(pageUrl, onPage, { params = {}, streamId, useCache = true } = {}) {
+  if (useCache) {
+    const cached = readCachedTransactionRows();
+    if (cached) {
+      onPage(cached.rows, cached.totalCount);
+      return;
+    }
   }
 
-  const streamId = crypto.randomUUID();
+  const activeStreamId = streamId || crypto.randomUUID();
   let after = null;
   let allRows = [];
   let totalCount;
@@ -173,7 +206,8 @@ async function loadPagesStreaming(pageUrl, onPage) {
   while (true) {
     const url = new URL(pageUrl, window.location.origin);
     if (after) url.searchParams.set("after", after);
-    url.searchParams.set("stream_id", streamId);
+    url.searchParams.set("stream_id", activeStreamId);
+    for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
 
     const res = await fetch(url);
     if (!res.ok) throw new Error("bad response");

@@ -33,6 +33,12 @@ let traySnapshotRestored = false;
 // True from the moment a full reload is accepted by the server until the
 // re-stream that follows it has finished -- see clearForFullReload.
 let restreamingFullReload = false;
+// Matches whose discrepancy the server re-derived on the last load, because the
+// HCB transactions behind them had changed value (see Matches::Resync). Worth
+// saying out loud rather than letting the numbers move quietly: a match that
+// stopped balancing is usually the very thing a sync or a full reload was
+// reaching for.
+let lastResynced = [];
 // The tray snapshot that full reload parked, held here (rather than read back
 // out of localStorage) so an in-progress match survives the re-stream even if
 // the re-stream itself fails and the page carries on without one.
@@ -316,6 +322,7 @@ async function loadAll() {
   allTransactions = txData.transactions;
   byId = new Map(allTransactions.map((t) => [t.id, t]));
   matches = matchData.matches;
+  lastResynced = matchData.resynced || [];
   transactionsLoaded = true;
 
   zeroBalanceOptions = txData.zero_balance_options || [];
@@ -359,6 +366,7 @@ async function reloadInPlace() {
   // as selectable while it's in the tray); re-adding it from the server's list
   // would make them look used and drop them out of the lists mid-edit.
   matches = editingMatchId === null ? matchData.matches : matchData.matches.filter((m) => m.id !== editingMatchId);
+  lastResynced = matchData.resynced || [];
 
   // A transaction can leave the working set between loads -- most likely
   // because someone else moved the cutoff past it. Drop those from the tray
@@ -433,7 +441,8 @@ async function refreshTransactions({ announce }) {
       return;
     }
     const added = allTransactions.length - before;
-    setSyncNote(added > 0 ? `${added} new transaction${added === 1 ? "" : "s"} loaded` : "updated");
+    const loaded = added > 0 ? `${added} new transaction${added === 1 ? "" : "s"} loaded` : "updated";
+    setSyncNote(`${loaded}${resyncNote()}`);
   } finally {
     transactionsRefreshing = false;
     setSyncButtonsDisabled(false);
@@ -497,8 +506,18 @@ async function fullReloadTransactionsAndRender() {
     const changed = await fullReloadTransactions({
       onSyncing: () => {
         started = true;
-        setSyncNote("re-reading full history from HCB — this can take a few minutes…");
+        setSyncNote("re-reading full history from HCB — rows appear as they arrive…");
         clearForFullReload();
+      },
+      // clearForFullReload emptied these, so the reload's pages render into the
+      // same provisional view an ordinary load streams into: rows appear as the
+      // walk progresses, and loadAll below replaces them with the authoritative
+      // (cutoff-filtered, match-aware) version once the drain has landed.
+      onPage: (rows, totalCount) => {
+        allTransactions.push(...rows);
+        for (const t of rows) byId.set(t.id, t);
+        updateLoadProgress(totalCount);
+        render();
       },
     });
     // Nothing was cleared and nothing is running: the request itself failed, so
@@ -516,12 +535,18 @@ async function fullReloadTransactionsAndRender() {
       setSyncNote("full reload finished, but this page couldn't load it — reload the page");
       return;
     }
-    setSyncNote(changed ? "full reload complete" : "still running — reload this page in a few minutes to see the result");
+    setSyncNote(changed ? `full reload complete${resyncNote()}` : "still running — reload this page in a few minutes to see the result");
   } finally {
     restreamingFullReload = false;
     transactionsRefreshing = false;
     setSyncButtonsDisabled(false);
   }
+}
+
+function resyncNote() {
+  if (!lastResynced.length) return "";
+  const n = lastResynced.length;
+  return ` — ${n} match${n === 1 ? "" : "es"} no longer balance${n === 1 ? "s" : ""} (amounts changed on HCB)`;
 }
 
 function usedIds() {
