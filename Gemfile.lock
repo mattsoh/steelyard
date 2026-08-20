@@ -126,6 +126,9 @@ GEM
       logger
     faraday-net_http (3.4.4)
       net-http (~> 0.5)
+    faraday-net_http_persistent (2.3.1)
+      faraday (~> 2.5)
+      net-http-persistent (>= 4.0.4, < 5)
     fugit (1.13.0)
       et-orbi (~> 1.4)
       raabro (~> 1.4)
@@ -186,6 +189,8 @@ GEM
       bigdecimal (>= 3.1, < 5)
     net-http (0.9.1)
       uri (>= 0.11.1)
+    net-http-persistent (4.0.8)
+      connection_pool (>= 2.2.4, < 4)
     net-imap (0.6.6)
       date
       net-protocol
@@ -431,6 +436,7 @@ DEPENDENCIES
   debug
   dotenv
   dotenv-rails
+  faraday-net_http_persistent (~> 2.3)
   importmap-rails
   jbuilder
   kamal

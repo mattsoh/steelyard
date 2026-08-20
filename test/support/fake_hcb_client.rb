@@ -19,6 +19,10 @@ class FakeHcbClient
     @transactions_calls = 0
     @user_id = user_id
     @comments = comments
+    # A redrain fetches the pages of its safety-overlap window concurrently
+    # (Hcb::OrganizationTransactions#parallel_pages), so the call counter these
+    # tests assert on is incremented from several threads at once.
+    @mutex = Mutex.new
   end
 
   def user = @user
@@ -28,6 +32,14 @@ class FakeHcbClient
   # ordering) so tests can simulate activity happening between two drains.
   def add_transactions(new_transactions)
     @transactions = new_transactions + @transactions
+  end
+
+  # Drops a transaction HCB no longer returns, so tests can simulate the
+  # baseline diverging from HCB's list in a way that shifts every position
+  # after it -- which is what an incremental redrain's tiling check has to
+  # notice rather than splice around.
+  def remove_transaction(id)
+    @transactions = @transactions.reject { |t| t["id"] == id }
   end
 
   # Changes an already-"seen" transaction in place (same id, new attributes) so
@@ -42,7 +54,7 @@ class FakeHcbClient
   end
 
   def transactions(_organization_id, after: nil, limit: 100, filters: {})
-    @transactions_calls += 1
+    @mutex.synchronize { @transactions_calls += 1 }
 
     results = @transactions
     search = filters[:search] || filters["search"]

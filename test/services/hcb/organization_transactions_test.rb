@@ -163,6 +163,108 @@ class Hcb::OrganizationTransactionsTest < ActiveSupport::TestCase
     assert_equal 3, calls_during_refresh
   end
 
+  # Records every cursor asked for, so a test can assert a redrain named its
+  # page boundaries from the baseline (the concurrent path) rather than
+  # discovering each one from the page before it (the serial walk). Which
+  # cursors were used is the only externally visible difference between the
+  # two: both make the same number of requests and return the same result.
+  class CursorRecordingClient < FakeHcbClient
+    def cursors = @cursors ||= Queue.new
+
+    def transactions(organization_id, after: nil, limit: 100, filters: {})
+      cursors << after
+      super
+    end
+
+    def cursors_asked
+      asked = []
+      asked << cursors.pop until cursors.empty?
+      asked
+    end
+  end
+
+  def five_hundred_old_transactions
+    (1..500).map { |n| { "id" => "txn_old_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
+  end
+
+  test "an incremental redrain names its page boundaries from the baseline instead of waiting for each cursor" do
+    old_transactions = five_hundred_old_transactions
+    client = CursorRecordingClient.new(transactions: old_transactions)
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+    service.all
+
+    new_transactions = (1..50).map { |n| { "id" => "txn_new_#{n}", "date" => "2026-02-01", "amount_cents" => n } }.reverse
+    client.add_transactions(new_transactions)
+    client.cursors_asked
+
+    result = service.refresh!
+
+    # 50 landed, so the first page carries them plus the baseline's newest 50 --
+    # leaving the rest of the 300-transaction overlap window to be fetched from
+    # baseline positions 49 and 149. A serial walk would instead have had to ask
+    # for txn_old_351 only after the page ending at txn_old_451 came back.
+    assert_equal [ nil, "txn_old_451", "txn_old_351" ], client.cursors_asked
+    assert_equal new_transactions.map { |t| t["id"] } + old_transactions.map { |t| t["id"] }, result.map { |t| t["id"] }
+  end
+
+  test "an incremental redrain still picks up an in-place change inside the overlap window" do
+    client = CursorRecordingClient.new(transactions: five_hundred_old_transactions)
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+    service.all
+
+    # Still at its baseline position, so the window tiles and the cheap
+    # concurrent path is taken -- but the copy that lands has to be HCB's.
+    client.update_transaction("txn_old_400", "declined" => true, "amount_cents" => 0)
+    client.cursors_asked
+
+    result = service.refresh!
+
+    # Nothing landed, so the overlap window's page boundaries are the baseline's
+    # own: positions 99 and 199, both named up front rather than waited for.
+    assert_equal [ nil, "txn_old_401", "txn_old_301" ], client.cursors_asked
+    changed = result.find { |t| t["id"] == "txn_old_400" }
+    assert changed["declined"]
+    assert_equal 0, changed["amount_cents"]
+    assert_equal 500, result.size
+  end
+
+  test "an incremental redrain falls back to walking cursors when more than a page of activity has landed" do
+    old_transactions = five_hundred_old_transactions
+    client = CursorRecordingClient.new(transactions: old_transactions)
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+    service.all
+
+    # The baseline's newest transaction no longer appears in HCB's newest page,
+    # so there's no way to read off how far the list has shifted -- and cursors
+    # picked from the baseline would leave a gap in the middle of the result.
+    new_transactions = (1..150).map { |n| { "id" => "txn_new_#{n}", "date" => "2026-02-01", "amount_cents" => n } }.reverse
+    client.add_transactions(new_transactions)
+    client.cursors_asked
+
+    result = service.refresh!
+
+    assert_equal new_transactions.map { |t| t["id"] } + old_transactions.map { |t| t["id"] }, result.map { |t| t["id"] }
+    assert_equal 650, result.size
+  end
+
+  test "an incremental redrain falls back to walking cursors when the baseline has diverged mid-window" do
+    old_transactions = five_hundred_old_transactions
+    client = CursorRecordingClient.new(transactions: old_transactions)
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+    service.all
+
+    # Gone from HCB, so every baseline position after it is off by one and the
+    # window no longer tiles. Splicing on the guessed boundaries would drop a
+    # transaction, which is a wrong running balance -- so this has to walk.
+    client.remove_transaction("txn_old_480")
+
+    result = service.refresh!
+
+    assert_equal 499, result.size
+    assert_not_includes result.map { |t| t["id"] }, "txn_old_480"
+    assert_equal old_transactions.map { |t| t["id"] } - [ "txn_old_480" ], result.map { |t| t["id"] }
+  end
+
   test "all reuses the long-lived baseline for an incremental redrain once the primary cache has expired" do
     old_transactions = (1..500).map { |n| { "id" => "txn_old_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
     client = FakeHcbClient.new(transactions: old_transactions)

@@ -36,6 +36,13 @@ module Hcb
     # nested form, but only under an organization, and it's deprecated.)
     def comments(transaction_id) = get("/api/v4/comments", transaction_id: transaction_id)
 
+    # Refreshes the token now, on the calling thread, so a caller about to fan
+    # out concurrent requests (OrganizationTransactions#parallel_pages) does the
+    # refresh once here rather than having every worker thread race into
+    # #ensure_fresh_token! -- which takes a row lock and would serialize the
+    # fan-out on the database instead of on HCB.
+    def warm_token! = ensure_fresh_token!
+
     private
 
     # An id or slug going into a URL *path*, escaped.

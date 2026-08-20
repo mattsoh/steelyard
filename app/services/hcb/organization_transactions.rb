@@ -35,6 +35,24 @@ module Hcb
     # generous safety margin, not a precise cutoff.
     SAFETY_OVERLAP = 300
 
+    # How many of the SAFETY_OVERLAP pages a redrain asks HCB for at once.
+    #
+    # Cursor pagination is serial by nature -- page N+1 needs an id from page N
+    # -- which is why a redrain used to cost SAFETY_OVERLAP / PAGE_SIZE round
+    # trips in sequence. But on a *re*drain we already hold the previous drain,
+    # so we already know the ids sitting at each page boundary, and can ask for
+    # every page of the overlap window at the same time instead of waiting to be
+    # told each cursor. See #parallel_incremental_drain.
+    #
+    # Capped, and deliberately low, because a page is expensive on HCB's side in
+    # a way its size doesn't suggest: api/v4 paginates in Ruby, loading the
+    # organization's *entire* transaction history and then slicing the requested
+    # window out of it (Api::V4::Pagination#paginate_cursor). Every page costs
+    # HCB a full-history load, so the fan-out is bounded to keep this app from
+    # turning one viewer's page refresh into a burst of them. It also shares the
+    # 1000-request / 5-minute per-IP budget with the whole userbase.
+    MAX_CONCURRENT_PAGES = ENV.fetch("HCB_MAX_CONCURRENT_PAGES", 4).to_i
+
     # How many of the newest transactions a #sync_head! peek pulls from HCB.
     # One page, so answering "has anything landed since the last drain?" costs
     # a single HCB request -- where a redrain has to re-fetch SAFETY_OVERLAP
@@ -522,12 +540,110 @@ module Hcb
       return drain if previous.blank?
 
       previous_index = previous.each_with_index.to_h { |t, i| [ t["id"], i ] }
+      first = page(limit: PAGE_SIZE)
+
+      parallel_incremental_drain(previous, first) ||
+        serial_incremental_drain(previous, previous_index, first)
+    end
+
+    # The overlap window in one concurrent burst instead of one round trip per
+    # page, using the previous drain as a source of cursors.
+    #
+    # The first page still has to come back before anything else can be asked
+    # for, because it's what says how far HCB's list has shifted since the last
+    # drain: everything new sits at the head, so finding where the previous
+    # drain's newest transaction turns up in that page gives the offset. Once
+    # that's known, every remaining page of the window has a cursor we can name
+    # from the baseline, so they all go out together -- two round trips for the
+    # whole redrain rather than SAFETY_OVERLAP / PAGE_SIZE of them.
+    #
+    # Returns nil, meaning "fall back to walking it serially", whenever the
+    # pages that come back don't tile the baseline exactly: more than one page
+    # of new activity (so the offset can't be read off the first page), a
+    # transaction gone from the middle of the window, a cursor HCB no longer
+    # recognizes. Those are the cases where guessing cursors from a stale
+    # baseline could splice a gap into the result, and a gap in the drain is a
+    # wrong running balance -- so the cheap path only ever produces a result it
+    # can prove is contiguous, and hands back nil otherwise.
+    #
+    # In-place changes *are* picked up: an id that stays put but comes back
+    # declined, or with a corrected amount, still tiles, and it's the freshly
+    # fetched copy that lands in the result. Catching exactly that is what
+    # SAFETY_OVERLAP is for.
+    def parallel_incremental_drain(previous, first)
+      return nil if MAX_CONCURRENT_PAGES <= 1
+
+      head = first["data"] || []
+      return nil if head.empty? || !first["has_more"]
+
+      # How many transactions have landed since the drain we're building on:
+      # where that drain's newest transaction shows up in HCB's newest page.
+      new_count = head.index { |t| t["id"] == previous.first["id"] }
+      return nil if new_count.nil?
+
+      # head is authoritative for its whole span, so the rest of it should be
+      # the baseline's own head, transaction for transaction. If it isn't, the
+      # baseline has diverged in a way cursors picked from it can't be trusted.
+      overlap = head[new_count..]
+      return nil unless overlap.each_with_index.all? { |t, i| previous[i] && previous[i]["id"] == t["id"] }
+
+      # Baseline position the first page consumed through, and the cursors for
+      # the pages that carry the rest of the overlap window. Each is the id
+      # immediately before the page it fetches, which is what `after` means.
+      consumed_through = overlap.size - 1
+      cursor_positions = (consumed_through...(SAFETY_OVERLAP - new_count - 1)).step(PAGE_SIZE).to_a
+      return nil if cursor_positions.any? { |position| previous[position].nil? }
+      return head + (previous[(consumed_through + 1)..] || []) if cursor_positions.empty?
+
+      pages = parallel_pages(cursor_positions.map { |position| previous[position]["id"] })
+      return nil if pages.nil?
+
+      # Same tiling check as above, now for each fetched page against the span
+      # of the baseline its cursor should have landed it on.
+      fetched = []
+      cursor_positions.zip(pages).each do |position, data|
+        return nil if data.empty?
+        return nil unless data.each_with_index.all? { |t, i| previous[position + 1 + i] && previous[position + 1 + i]["id"] == t["id"] }
+
+        fetched.concat(data)
+        consumed_through = position + data.size
+      end
+
+      head + fetched + (previous[(consumed_through + 1)..] || [])
+    end
+
+    # The given cursors' pages, fetched concurrently and returned in the order
+    # asked for. nil if any of them failed -- the caller's answer to that is to
+    # walk the window serially instead, which is also the right answer to a
+    # cursor HCB rejects (a 400 for an `after` it can't find).
+    def parallel_pages(cursors)
+      @client.warm_token! if @client.respond_to?(:warm_token!)
+
+      cursors.each_slice(MAX_CONCURRENT_PAGES).flat_map { |batch|
+        batch.map { |cursor|
+          Thread.new do
+            Rails.application.executor.wrap do
+              page(after: cursor, limit: PAGE_SIZE)["data"] || []
+            end
+          end
+        }.map(&:value)
+      }
+    rescue Hcb::TokenExpiredError
+      raise
+    rescue StandardError
+      nil
+    end
+
+    # Pages the overlap window one cursor at a time, taking the first page as
+    # already fetched. The fallback for everything #parallel_incremental_drain
+    # declines to answer, and the only path that runs when there's no usable
+    # baseline to pick cursors from.
+    def serial_incremental_drain(previous, previous_index, first)
       fresh = []
-      after = nil
+      current = first
 
       loop do
-        page = self.page(after: after, limit: PAGE_SIZE)
-        data = page["data"] || []
+        data = current["data"] || []
         break if data.empty?
 
         fresh.concat(data)
@@ -537,9 +653,9 @@ module Hcb
           return fresh + previous[(rejoin_at + 1)..] if rejoin_at
         end
 
-        break unless page["has_more"]
+        break unless current["has_more"]
 
-        after = data.last["id"]
+        current = page(after: data.last["id"], limit: PAGE_SIZE)
       end
 
       fresh

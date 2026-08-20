@@ -22,6 +22,13 @@ gem "jbuilder"
 # OAuth2 client for authenticating against HCB's v4 API
 gem "oauth2", "~> 2.0"
 
+# Keep-alive HTTP for the HCB API. Faraday's default net_http adapter opens a
+# fresh TCP+TLS connection per request; against hcb.hackclub.com that handshake
+# measures ~270ms, which a multi-page drain pays once per page. The persistent
+# adapter holds the socket open (and pools it across Puma threads), taking a
+# warm request from ~400ms to ~140ms.
+gem "faraday-net_http_persistent", "~> 2.3"
+
 # Row-level change history for matches and cutoffs [https://github.com/paper-trail-gem/paper_trail]
 gem "paper_trail", "~> 17.0"
 
