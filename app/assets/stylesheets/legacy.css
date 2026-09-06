@@ -580,6 +580,16 @@ button.danger {
 .match-row .side-out { color: var(--out-color); }
 .match-row .side-out div { margin-bottom: 2px; }
 
+/* A grid item is as wide as its content unless told otherwise, so a long memo
+   pushes its 1fr column past its share and drags the row -- and the actions
+   off its right-hand edge -- with it. These two columns get whatever space the
+   fixed ones leave and wrap inside it, memos included: HCB memos run long, and
+   they have no spaces to break at. */
+.match-row .side-in, .match-row .side-out {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 /* The caret that opens a row: a square hit area in the row's first column,
    not the padded pill every other button on the row is. Centred on the row
    while it's one line high; once it's open the row is as tall as its legs, so
@@ -605,13 +615,14 @@ button.danger {
 
 .match-row-open .match-toggle { align-self: start; }
 
-/* Collapsed, a side is one line: the whole point is that a match with a dozen
-   legs takes the same room as one with two. Long memos are cut off rather than
-   wrapped -- expanding the row is what shows them in full. */
+/* Collapsed, a side names one leg however many it has: the point is that a
+   match with a dozen legs takes about the room of one with three. A memo too
+   long for the column wraps onto a second line rather than being cut off --
+   the row grows by a line, where an ellipsis would lose the end of the very
+   memo someone is reading the row to identify. */
 .match-side-summary-line {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 /* "+3 more" is about the row, not about the transaction named beside it, so

@@ -1287,8 +1287,16 @@ function matchMatchesSearch(m, tokens) {
 // only add the leg's own buttons -- so there's nothing to open, and no caret
 // offering to. Most matches are one-to-one, which is exactly the case where a
 // control that does nothing visible would be most confusing.
+//
+// Two legs a side is the same case in practice: the row is already two lines
+// tall because of the columns beside the sides (a discrepancy in a 90px column
+// carries "Matched by ... on ..." under it), so collapsing the second leg into
+// "+1 more" buys no height -- it only hides a transaction someone would then
+// have to click to see.
+const MATCH_ALWAYS_SHOWN_LEGS = 2;
+
 function matchIsCollapsible(incoming, outgoing) {
-  return incoming.length > 1 || outgoing.length > 1;
+  return incoming.length > MATCH_ALWAYS_SHOWN_LEGS || outgoing.length > MATCH_ALWAYS_SHOWN_LEGS;
 }
 
 function toggleMatchRow(id) {
