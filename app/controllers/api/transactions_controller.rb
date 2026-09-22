@@ -22,9 +22,14 @@ class Api::TransactionsController < ApplicationController
       zero_balance_date: cutoff&.date.to_json,
       zero_balance_selected_id: cutoff&.transaction_id.to_json,
       zero_balance_options: ledger.zero_options.map { |o| { date: o.date, transaction_id: o.transaction_id, beginning: o.beginning? } }.to_json,
-      # An organization mid-full-reload has no drain to answer from, so this
-      # would otherwise be indistinguishable from one with no transactions.
+      # An organization mid-walk has no drain to answer from, so this would
+      # otherwise be indistinguishable from one with no transactions. Both are
+      # reported: a reload is somebody's deliberate re-read and is worth saying
+      # so, while `draining` covers that and a first cold load alike, and is
+      # what the caller should actually branch on before deciding an
+      # organization is empty.
       reloading: ledger.reloading?.to_json,
+      draining: ledger.draining?.to_json,
       # The whole organization's balance, not the working set's -- the header
       # shows it so it can be read against HCB's own figure.
       balance: (ledger.balance_cents / 100.0).round(2).to_json,

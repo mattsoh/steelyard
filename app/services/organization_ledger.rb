@@ -85,6 +85,13 @@ class OrganizationLedger
   # "empty", which every count and balance here would otherwise report the same.
   def reloading? = @hcb_transactions.full_reload_running?
 
+  # A walk of any kind is rebuilding this organization's history, so an empty
+  # result means "not loaded yet" rather than "no transactions". Broader than
+  # #reloading? on purpose: a first, cold load leaves nothing to answer from
+  # either, and a view that can't tell the two apart renders an empty
+  # organization at exactly the moment it is being filled.
+  def draining? = @hcb_transactions.drain_running?
+
   # Oldest-first. Declined transactions are excluded entirely -- they never
   # moved money, so they'd corrupt the running balance and can't be matched.
   def transactions

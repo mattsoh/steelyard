@@ -37,6 +37,10 @@ class Api::LedgerController < ApplicationController
       zero_balance_date: cutoff&.date.to_json,
       zero_balance_selected_id: cutoff&.transaction_id.to_json,
       zero_balance_options: ledger.zero_options.map { |o| { date: o.date, transaction_id: o.transaction_id, beginning: o.beginning? } }.to_json,
+      # Same reasoning as Api::TransactionsController#index: an empty ledger
+      # during a walk is one that hasn't loaded, not one with no rows.
+      reloading: ledger.reloading?.to_json,
+      draining: ledger.draining?.to_json,
       final_balance: (final_balance_cents / 100.0).round(2).to_json,
       ledger: "[#{rows.join(',')}]"
     )

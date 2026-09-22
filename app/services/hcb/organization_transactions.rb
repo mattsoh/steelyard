@@ -124,11 +124,31 @@ module Hcb
 
       result = cached_result
       unless result
-        # A claimed full reload has purged the caches and is rebuilding them.
-        # Draining here would be a second full walk of the same history against
-        # the rate limit the claim exists to protect -- so this answers "nothing
-        # yet" and lets the caller say a reload is running (see #sync_state).
-        return [] if full_reload_running?
+        # A claimed walk is already rebuilding this. Draining here would be a
+        # second full walk of the same history against the rate limit the claim
+        # exists to protect -- so this answers "nothing yet" and lets the caller
+        # say a load is running (see #sync_state, and #draining? on
+        # OrganizationLedger).
+        #
+        # Any kind of walk, not just a reload. When this only checked for
+        # reloads, closing a tab part-way through an organization's first load
+        # and opening it again put the authoritative read (/api/transactions ->
+        # OrganizationLedger#effective_cutoff -> here) straight into a full
+        # drain beside the walk that was already claimed -- the exact duplicate
+        # load this claim exists to prevent, just reached by the one path that
+        # wasn't looking.
+        #
+        # A *stale* claim is not a reason to refuse -- nothing is advancing it,
+        # so waiting would strand the organization until it expired -- but it is
+        # not a reason to start over either. Finish the walk it left behind,
+        # from the pages it already fetched.
+        claim = stream_claim
+        if claim
+          return [] unless stale_stream_claim?(claim)
+
+          resume_stream!(claim[:stream_id])
+          return cached_result || []
+        end
 
         computed = false
         result = Rails.cache.fetch(cache_key, expires_in: TTL, race_condition_ttl: 10.seconds) do
@@ -298,6 +318,24 @@ module Hcb
     # Any walk at all, of either kind -- what a caller about to start its own
     # checks so it can attach to the one already running instead.
     def drain_running? = stream_claim.present?
+
+    # A claim nobody is advancing any more: the heartbeat has lapsed, or the
+    # browser driving it said outright that it was going away. Whoever finds it
+    # this way may take it over -- see #fetch_page's adoption path, and #all,
+    # which declines to wait for one.
+    def stale_stream_claim?(claim = stream_claim)
+      return false unless claim
+
+      claim[:abandoned].present? ||
+        claim[:touched_at].blank? ||
+        Time.now - claim[:touched_at] >= STREAM_HEARTBEAT_TIMEOUT
+    end
+
+    # A walk that really is still being driven, and so worth waiting for.
+    def live_stream_claim?
+      claim = stream_claim
+      claim.present? && !stale_stream_claim?(claim)
+    end
 
     # Tells the fallback job not to wait out the heartbeat: the browser driving
     # this stream has said it is going away (see Api::TransactionsController
@@ -611,11 +649,29 @@ module Hcb
       # Claimed even though it finishes inside this request: two tabs opening an
       # organization together would otherwise each pay for the overlap window,
       # and a splice is several HCB requests, not one.
+      inherited = nil
       unless claim_stream!(stream_id, kind: :cold)
-        return { data: [], has_more: false, next_after: nil, total_count: nil, waiting: true }
+        inherited = adopt_abandoned_walk!(stream_id)
+        # Somebody really is still walking it, so wait for them.
+        return { data: [], has_more: false, next_after: nil, total_count: nil, waiting: true } if inherited.nil?
       end
 
       begin
+        # An abandoned walk with pages already in hand. Carry it on from where it
+        # stopped rather than starting the organization again -- this is what
+        # closing a tab mid-load and opening it again should cost: nothing.
+        if inherited.present?
+          progress.start!(kind: "cold", source: "browser", stream_id: stream_id)
+          progress.advance!(
+            pages_done: (inherited.size / [ limit, 1 ].max.to_f).ceil,
+            transactions_done: inherited.size,
+            phase: "draining"
+          )
+          return stream_page(
+            stream_id, after: inherited.last["id"], limit: limit, reload: false, inherited: inherited
+          )
+        end
+
         if baseline.present?
           progress.start!(kind: "incremental", source: "browser", stream_id: stream_id, total_count: baseline.size)
           result = incremental_drain(baseline)
@@ -636,11 +692,50 @@ module Hcb
       end
     end
 
+    # Takes over a walk nobody is advancing any more, inheriting the pages it
+    # had already fetched.
+    #
+    # This is the answer to the commonest way a drain gets interrupted: somebody
+    # opens a large organization, closes the tab part-way through the walk, and
+    # comes back. The buffer from that walk is still there, so the right thing
+    # is to carry on from it -- not to wait for the background job to notice
+    # (which leaves the viewer watching somebody else's progress bar for no
+    # reason), and certainly not to walk the history again from the top.
+    #
+    # Returns the inherited pages (possibly empty, meaning the claim was taken
+    # over but had nothing to hand on), or nil when the claim is still live and
+    # the caller should wait for its owner instead.
+    #
+    # Reload claims are never adopted: a reload has purged the caches, so
+    # continuing one means continuing in reload mode, which is only offered to
+    # the stream the reload was claimed for (see #full_reload_stream?). The job
+    # behind it is what finishes an abandoned reload.
+    def adopt_abandoned_walk!(stream_id)
+      claim = stream_claim
+      return nil unless claim && claim[:kind] != :reload
+      return nil unless stale_stream_claim?(claim)
+
+      previous = claim[:stream_id]
+      inherited = (Rails.cache.read(buffer_key(previous)) || [])
+
+      # Moved rather than copied: two buffers for one walk is two ways for it to
+      # be finished, and the loser would publish a partial history.
+      Rails.cache.write(buffer_key(stream_id), inherited, expires_in: STREAM_CLAIM_TTL) if inherited.any?
+      Rails.cache.delete(buffer_key(previous)) unless previous == stream_id
+
+      Rails.cache.write(
+        stream_claim_key,
+        claim.merge(stream_id: stream_id, touched_at: Time.now, abandoned: false),
+        expires_in: STREAM_CLAIM_TTL
+      )
+      inherited
+    end
+
     # One page of a claimed walk: fetch it, add it to the stream's buffer, and
     # publish once HCB says there is no more. Shared by reload mode and a cold
     # first drain, which differ only in what they refuse to read from cache --
     # not in how the walk itself is accumulated.
-    def stream_page(stream_id, after:, limit:, reload:)
+    def stream_page(stream_id, after:, limit:, reload:, inherited: [])
       raw = page(after: after, limit: limit)
       data = raw["data"] || []
       has_more = data.any? && raw["has_more"]
@@ -671,11 +766,15 @@ module Hcb
       end
 
       {
-        data: data,
+        # Everything the adopted walk had already fetched goes out with this
+        # page, so the tab that picked it up renders the whole walk so far in
+        # one go rather than showing only the tail of an organization.
+        data: inherited + data,
         has_more: has_more,
         next_after: has_more ? data.last["id"] : nil,
         total_count: raw["total_count"],
-        streamed: buffered.size
+        streamed: buffered.size,
+        resumed: inherited.any?
       }
     end
 

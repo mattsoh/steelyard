@@ -165,6 +165,14 @@ async function load() {
     if (!ledgerRes.ok) throw new Error("bad response");
     data = await ledgerRes.json();
     matchData = matchDataResolved;
+
+    // Same as the matcher's loadAll: empty because the walk hasn't published,
+    // not because there is nothing to show.
+    if (isStillLoading(data, data.ledger)) {
+      logActivity("the authoritative ledger isn't ready yet — waiting for the drain to publish", "warn");
+      if (await waitForNewerDrain(null, SYNC_POLL_TIMEOUT_MS, { onProgress: renderSyncProgress })) return load();
+      throw new Error("timed out waiting for the drain to publish");
+    }
   } catch (e) {
     // Same as the matcher's loadAll: a full reload owns the history until it
     // lands, so this waits it out and loads once rather than reporting a

@@ -452,6 +452,19 @@ const FULL_RELOAD_WARNING =
   "You can close this tab once it has started — it finishes in the background either way.\n\n" +
   "Start the full reload?";
 
+// An authoritative response (/api/transactions, /api/ledger) that came back
+// empty because a walk is still building this organization's history -- not
+// because the organization has no transactions.
+//
+// The two are identical on the wire apart from this flag, and getting it wrong
+// means rendering "Nothing to show" over an organization that is mid-load. The
+// server answers empty rather than waiting on the walk because holding a web
+// request open for a multi-minute drain is worse; the caller's job is to wait
+// for it and ask again.
+function isStillLoading(data, rows) {
+  return !!(data && (data.draining || data.reloading)) && (!rows || rows.length === 0);
+}
+
 // ---------------------------------------------------------------------------
 // Loading the rows
 // ---------------------------------------------------------------------------

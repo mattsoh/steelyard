@@ -316,6 +316,16 @@ async function loadAll() {
     if (!txRes.ok) throw new Error("bad response");
     txData = await txRes.json();
     matchData = matchDataResolved;
+
+    // The walk that owns this organization hadn't published by the time the
+    // authoritative view was asked for, so there is genuinely nothing to render
+    // yet. Waiting for it and asking again is the whole recovery -- rendering
+    // this would tell someone their organization is empty while it is loading.
+    if (isStillLoading(txData, txData.transactions)) {
+      logActivity("the authoritative view isn't ready yet — waiting for the drain to publish", "warn");
+      if (await waitForNewerDrain(null, SYNC_POLL_TIMEOUT_MS, { onProgress: renderSyncProgress })) return loadAll();
+      throw new Error("timed out waiting for the drain to publish");
+    }
   } catch (e) {
     clearLoadProgress();
     // Someone else's full reload owns this organization's history right now, so

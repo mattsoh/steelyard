@@ -191,6 +191,54 @@ class Api::TransactionsControllerTest < ActionController::TestCase
     assert_equal 250, body.dig("progress", "total_count")
   end
 
+  test "closing an organization part-way through its first load and reopening it walks the rest, not the lot" do
+    transactions = (1..500).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
+    fake_client = FakeHcbClient.new(transactions: transactions)
+
+    Hcb::Client.stub :new, fake_client do
+      stub_membership("reader") do
+        # A tab opens the organization and gets two pages in.
+        get :page, params: { organization_id: "org_1", stream_id: "tab-a" }
+        first = JSON.parse(response.body)
+        get :page, params: { organization_id: "org_1", stream_id: "tab-a", after: first["next_after"] }
+
+        # The tab closes; the beacon hands the walk off.
+        post :handoff, params: { organization_id: "org_1", stream_id: "tab-a" }
+        spent_before_reopen = fake_client.transactions_calls
+
+        # The organization is opened again in a new tab.
+        get :page, params: { organization_id: "org_1", stream_id: "tab-b" }
+        resumed = JSON.parse(response.body)
+
+        assert_equal 300, resumed["rows"].size,
+          "the reopened tab should be handed everything the closed one had already fetched"
+        assert_equal 1, fake_client.transactions_calls - spent_before_reopen,
+          "reopening should cost one more page, not another walk of the whole history"
+      end
+    end
+  end
+
+  test "the authoritative view says it is still loading rather than reporting an empty organization" do
+    transactions = (1..500).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
+    fake_client = FakeHcbClient.new(transactions: transactions)
+
+    Hcb::Client.stub :new, fake_client do
+      stub_membership("reader") do
+        get :page, params: { organization_id: "org_1", stream_id: "tab-a" }
+        spent = fake_client.transactions_calls
+
+        get :index, params: { organization_id: "org_1" }
+        body = JSON.parse(response.body)
+
+        assert_empty body["transactions"]
+        assert body["draining"], "an empty result mid-walk must be distinguishable from an empty organization"
+        assert_not body["reloading"], "a first load is not a reload"
+        assert_equal spent, fake_client.transactions_calls,
+          "the authoritative read must not walk the history beside the stream already doing it"
+      end
+    end
+  end
+
   test "refresh reports fresh, and enqueues nothing, when HCB has nothing new" do
     fake_client = FakeHcbClient.new(transactions: [
       { "id" => "txn_1", "date" => "2026-01-01", "memo" => "Donation", "amount_cents" => 5_000 }

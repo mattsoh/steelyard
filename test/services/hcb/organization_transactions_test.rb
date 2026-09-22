@@ -818,6 +818,73 @@ class Hcb::OrganizationTransactionsTest < ActiveSupport::TestCase
     end
   end
 
+  # --- closing the tab and coming back ---------------------------------------
+
+  test "reopening an organization continues the abandoned walk instead of starting a second one" do
+    transactions = (1..500).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
+    client = FakeHcbClient.new(transactions: transactions)
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+
+    # A tab opens a cold organization, gets two pages in, and is closed.
+    first = service.fetch_page(stream_id: "tab-a", limit: 100)
+    service.fetch_page(stream_id: "tab-a", after: first[:next_after], limit: 100)
+    service.abandon_stream!("tab-a")
+    spent_by_first_tab = client.transactions_calls
+
+    # The organization is opened again.
+    reopened = Hcb::OrganizationTransactions.new(client, "org_1")
+    resumed = reopened.fetch_page(stream_id: "tab-b", limit: 100)
+
+    # It picks the walk up rather than starting it: the 200 rows the first tab
+    # had already fetched come straight back, and only the pages that were
+    # actually still outstanding are bought from HCB.
+    assert resumed[:resumed]
+    assert_equal 300, resumed[:data].size, "the rows the closed tab had already fetched should come back with the first page"
+    assert_equal transactions.first(300).map { |t| t["id"] }, resumed[:data].map { |t| t["id"] }
+    assert_equal 1, client.transactions_calls - spent_by_first_tab
+
+    # And finishing it costs only what is left, not another 500 rows.
+    after = resumed
+    after = reopened.fetch_page(stream_id: "tab-b", after: after[:next_after], limit: 100) while after[:has_more]
+
+    assert_equal 5, client.transactions_calls, "the history should have been walked once between the two tabs, not twice"
+    assert_equal transactions.map { |t| t["id"] }, reopened.all.map { |t| t["id"] }
+  end
+
+  test "the authoritative read never walks the history beside a walk already claimed" do
+    transactions = (1..500).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
+    client = FakeHcbClient.new(transactions: transactions)
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+
+    first = service.fetch_page(stream_id: "tab-a", limit: 100)
+    service.fetch_page(stream_id: "tab-a", after: first[:next_after], limit: 100)
+    spent = client.transactions_calls
+
+    # /api/transactions -> OrganizationLedger#effective_cutoff -> #all, while
+    # the walk above is still live. This is the path that used to start a
+    # second full drain inline.
+    assert_empty Hcb::OrganizationTransactions.new(client, "org_1").all
+    assert_equal spent, client.transactions_calls
+  end
+
+  test "an authoritative read finishes an abandoned walk rather than being stranded by its claim" do
+    transactions = (1..500).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
+    client = FakeHcbClient.new(transactions: transactions)
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+
+    first = service.fetch_page(stream_id: "tab-a", limit: 100)
+    service.fetch_page(stream_id: "tab-a", after: first[:next_after], limit: 100)
+    service.abandon_stream!("tab-a")
+    spent = client.transactions_calls
+
+    # Nothing is advancing the claim, and no job got to it. Refusing outright
+    # would leave the organization unreadable until the claim expired.
+    result = Hcb::OrganizationTransactions.new(client, "org_1").all
+
+    assert_equal transactions.map { |t| t["id"] }, result.map { |t| t["id"] }
+    assert_equal 3, client.transactions_calls - spent, "it should finish the walk, not restart it"
+  end
+
   # --- progress ---------------------------------------------------------------
 
   test "a streamed walk reports how far it has got while it is still running" do
