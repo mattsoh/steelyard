@@ -156,7 +156,7 @@ async function load() {
       provisional.sort(byDateDesc);
       lastTotalCount = totalCount;
       renderProvisional(totalCount);
-    });
+    }, { onProgress: renderSyncProgress });
 
     const [ledgerRes, matchDataResolved] = await Promise.all([
       fetch(`${API_BASE}/api/ledger`),
@@ -171,7 +171,8 @@ async function load() {
     // failure or rendering an empty ledger.
     if (e instanceof ReloadInProgressError) {
       showLedgerMessage(`<div class="empty-msg">A full reload of this organization is running — waiting for it to finish…</div>`);
-      if (await waitForReloadToLand()) return load();
+      if (await waitForReloadToLand({ onProgress: renderSyncProgress })) return load();
+      hideSyncProgress();
       showLedgerMessage(`<div class="empty-msg">Still reloading. <a href="#" class="nav-link load-retry">Retry</a></div>`);
       document.querySelector(".load-retry").addEventListener("click", (ev) => {
         ev.preventDefault();
@@ -179,6 +180,7 @@ async function load() {
       });
       return false;
     }
+    hideSyncProgress();
     showLedgerMessage(`<div class="empty-msg">Could not load transactions. <a href="#" class="nav-link load-retry">Retry</a></div>`);
     document.querySelector(".load-retry").addEventListener("click", (ev) => {
       ev.preventDefault();
@@ -360,6 +362,7 @@ async function refreshTransactions({ announce }) {
   try {
     const changed = await syncNewTransactions({
       onSyncing: () => setSyncNote("new activity found, syncing in the background…"),
+      onProgress: renderSyncProgress,
     });
     if (!changed) {
       setSyncNote(announce ? "up to date" : "");
@@ -431,9 +434,9 @@ async function fullReloadTransactionsAndRender() {
       onPage: (rows, totalCount) => {
         provisional.push(...rows.map((r) => ({ ...r, running_balance: null, is_zero_point: false })));
         provisional.sort(byDateDesc);
-        lastTotalCount = totalCount;
         renderProvisional(totalCount);
       },
+      onProgress: renderSyncProgress,
     });
     // Nothing was cleared and nothing is running: the request itself failed, so
     // the table is still showing the data it loaded with.

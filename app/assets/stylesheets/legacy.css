@@ -1560,3 +1560,104 @@ tr.zero-point { background: #fff8c5; }
 .activity-warn { color: var(--amber); }
 .activity-error { color: var(--red); }
 .activity-done { color: var(--green); }
+
+/* ---------------------------------------------------------------------------
+   Drain progress
+
+   Bottom-left, opposite the activity toggle, so the two never overlap: the
+   progress bar says how long this will take and the activity log says why,
+   and someone waiting on a slow load wants both at once.
+
+   Fixed rather than in the header because it has to survive the full reload
+   that empties the page underneath it -- that is precisely when it matters
+   most, and a header element would go with everything else.
+   --------------------------------------------------------------------------- */
+.sync-progress {
+  position: fixed;
+  left: 12px;
+  bottom: 12px;
+  z-index: 41;
+  width: min(360px, calc(100vw - 24px));
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 4px 16px rgba(31, 35, 40, 0.18);
+}
+
+.sync-progress.hidden { display: none; }
+
+.sync-progress-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 7px;
+}
+
+.sync-progress-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #1f2328;
+}
+
+.sync-progress-count {
+  flex: none;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: #656d76;
+}
+
+.sync-progress-track {
+  height: 5px;
+  border-radius: 3px;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.sync-progress-bar {
+  height: 100%;
+  width: 0;
+  border-radius: 3px;
+  background: var(--in-color);
+  /* Only the width is animated. A drain advances in visible jumps of a page at
+     a time, and easing between them reads as continuous movement rather than
+     as the hundred-row steps it actually is. */
+  transition: width 240ms ease-out;
+}
+
+/* No denominator to work from, so the bar sweeps instead of claiming a
+   position. The sweep is the honest answer to "how far along is this?" when
+   the answer is not known -- it says only that something is still happening,
+   which is the one thing a stalled drain would stop saying. */
+.sync-progress-indeterminate .sync-progress-bar {
+  width: 35%;
+  transition: none;
+  animation: sync-progress-sweep 1.3s ease-in-out infinite;
+}
+
+@keyframes sync-progress-sweep {
+  0%   { margin-left: -35%; }
+  100% { margin-left: 100%; }
+}
+
+.sync-progress-note {
+  margin-top: 6px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #656d76;
+}
+
+.sync-progress-stalled .sync-progress-bar { background: var(--amber); }
+.sync-progress-stalled .sync-progress-note { color: var(--amber); }
+
+.sync-progress-failed .sync-progress-bar { background: var(--red); }
+.sync-progress-failed .sync-progress-note { color: var(--red); }
+
+/* The sweep is a continuous, unprompted motion of exactly the kind this setting
+   exists to turn off. The bar still shows state, it just stops moving on its
+   own. */
+@media (prefers-reduced-motion: reduce) {
+  .sync-progress-bar { transition: none; }
+  .sync-progress-indeterminate .sync-progress-bar { animation: none; width: 100%; opacity: 0.35; }
+}

@@ -24,6 +24,25 @@
 
 <%= yield %>
 
+<%# How far along the current drain is. Shared by both pages for the same reason
+    the activity log is: a cold load or a full reload is minutes of waiting on
+    HCB, and the two pages should not disagree about how to describe it.
+
+    role="status" with a polite live region, unlike the activity log below --
+    this changes a handful of times per load rather than once per page, and
+    "how much longer" is exactly the thing worth announcing. %>
+<section id="sync-progress" class="sync-progress hidden" role="status" aria-live="polite"
+         aria-valuemin="0" aria-valuemax="100">
+  <div class="sync-progress-head">
+    <span id="sync-progress-label" class="sync-progress-label"></span>
+    <span id="sync-progress-count" class="sync-progress-count"></span>
+  </div>
+  <div class="sync-progress-track">
+    <div id="sync-progress-bar" class="sync-progress-bar"></div>
+  </div>
+  <div id="sync-progress-note" class="sync-progress-note"></div>
+</section>
+
 <%# What the page is doing with HCB, on both the matcher and the ledger -- both
     spend real time waiting on it, and a drain that takes minutes used to be
     indistinguishable from one that had stalled. Rendered here rather than per
@@ -45,7 +64,7 @@
   <ul id="activity-body"></ul>
 </section>
 
-<%= javascript_include_tag "legacy/hcb_csrf_shim", "legacy/details", "legacy/activity", "legacy/match_detail", "legacy/streaming", "legacy/csv" %>
+<%= javascript_include_tag "legacy/hcb_csrf_shim", "legacy/details", "legacy/activity", "legacy/sync_progress", "legacy/match_detail", "legacy/streaming", "legacy/csv" %>
 <%= yield :page_scripts %>
 </body>
 </html>

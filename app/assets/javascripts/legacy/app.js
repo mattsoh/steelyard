@@ -161,6 +161,10 @@ function allowNavigationWithoutWarning() {
 // Stays quiet unless the tray actually holds something, which is what keeps it
 // from crying wolf on every trip to the ledger.
 window.addEventListener("beforeunload", (e) => {
+  // Deliberately not extended to cover an in-flight drain. A streamed walk is
+  // handed off to a background job when this page goes away (see
+  // handOffActiveStreams in streaming.js), so closing the tab mid-load costs
+  // nothing worth interrupting somebody for. Unsaved match work still is.
   if (navigatingAway || !hasUnconfirmedMatch()) return;
   e.preventDefault();
   e.returnValue = ""; // Safari and older Chrome still key off this rather than preventDefault
@@ -264,7 +268,7 @@ function updateLoadProgress(totalCount) {
 }
 
 function clearLoadProgress() {
-
+  hideSyncProgress();
   document.getElementById("progress-incoming").textContent = "";
   document.getElementById("progress-outgoing").textContent = "";
   document.getElementById("load-progress-div").style.display = "none";
@@ -303,7 +307,7 @@ async function loadAll() {
       for (const t of rows) byId.set(t.id, t);
       updateLoadProgress(totalCount);
       render();
-    });
+    }, { onProgress: renderSyncProgress });
 
     const [txRes, matchDataResolved] = await Promise.all([
       fetch(`${API_BASE}/api/transactions`),
@@ -319,7 +323,8 @@ async function loadAll() {
     // once is the whole recovery, and it's not an error to report.
     if (e instanceof ReloadInProgressError) {
       showListsMessage(`<div class="empty-msg">A full reload of this organization is running — waiting for it to finish…</div>`);
-      if (await waitForReloadToLand()) return loadAll();
+      if (await waitForReloadToLand({ onProgress: renderSyncProgress })) return loadAll();
+      hideSyncProgress();
       showListsMessage(`<div class="empty-msg">Still reloading. <a href="#" class="nav-link load-retry">Retry</a></div>`);
       document.querySelectorAll(".load-retry").forEach((el) => {
         el.addEventListener("click", (ev) => {
@@ -451,6 +456,7 @@ async function refreshTransactions({ announce }) {
   try {
     const changed = await syncNewTransactions({
       onSyncing: () => setSyncNote("new activity found, syncing in the background…"),
+      onProgress: renderSyncProgress,
     });
     if (!changed) {
       setSyncNote(announce ? "up to date" : "");
@@ -542,7 +548,7 @@ async function fullReloadTransactionsAndRender() {
         updateLoadProgress(totalCount);
         render();
       },
-
+      onProgress: renderSyncProgress,
     });
     // Nothing was cleared and nothing is running: the request itself failed, so
     // the page is still showing the data it loaded with.

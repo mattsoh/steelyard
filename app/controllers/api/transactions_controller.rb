@@ -133,11 +133,49 @@ class Api::TransactionsController < ApplicationController
     }
   end
 
-  # Progress poll for the background redrain #refresh hands off. Reads local
-  # cache only -- never HCB -- so polling it every few seconds can't eat into
-  # the org-shared rate limit Hcb::OrganizationTransactions exists to protect.
+  # Progress poll for whatever drain is currently running, and the one request
+  # a warm page load makes. Reads local cache only -- never HCB -- so polling it
+  # every few seconds can't eat into the org-shared rate limit
+  # Hcb::OrganizationTransactions exists to protect.
+  #
+  # It answers two questions at once, which is why the client asks it before
+  # anything else. `token` names the drain the caches currently hold, so a
+  # browser holding rows from that same drain can render them immediately and
+  # make no further requests at all. `progress` says how far along a drain in
+  # flight has got, so a page that has nothing cached can show the real walk
+  # -- pages done, transactions so far, who is driving it -- instead of a
+  # spinner that looks the same whether the drain is moving or dead.
   def sync_status
     render json: Hcb::OrganizationTransactions.new(hcb_client, organization_id).sync_state
+  end
+
+  # "This tab is going away; don't wait for my heartbeat to lapse."
+  #
+  # Sent with navigator.sendBeacon from pagehide (see streaming.js), which is
+  # the only thing a closing page can reliably get out. Without it, a drain
+  # driven by a tab that closes stalls for the whole STREAM_HEARTBEAT_TIMEOUT
+  # before the fallback job is willing to take it over -- ninety seconds in
+  # which anybody else looking at the organization sees a walk that has visibly
+  # stopped moving and no way to tell it is never coming back.
+  #
+  # Idempotent, and safe to lose: everything it does, the heartbeat timeout
+  # would have done anyway, just later. So it answers :accepted without caring
+  # whether the claim was still this stream's to give up -- a beacon has no way
+  # to read a response, and a stream that already finished has nothing to hand
+  # over.
+  def handoff
+    transactions = Hcb::OrganizationTransactions.new(hcb_client, organization_id)
+    stream_id = params[:stream_id].to_s
+
+    if transactions.abandon_stream!(stream_id)
+      # No wait: the tab has said it is gone, so the delay that exists to avoid
+      # racing a live stream has nothing left to avoid.
+      WarmOrganizationTransactionsJob.perform_later(
+        current_user.id, organization_id, full: true, stream_id: stream_id
+      )
+    end
+
+    head :accepted
   end
 
   private

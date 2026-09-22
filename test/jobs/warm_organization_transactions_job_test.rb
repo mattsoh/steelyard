@@ -42,7 +42,7 @@ class WarmOrganizationTransactionsJobTest < ActiveJob::TestCase
     assert_nil service.sync_state[:fetched_at]
 
     Hcb::Client.stub(:for_user, ->(_u) { fake_client }) do
-      travel(Hcb::OrganizationTransactions::FULL_RELOAD_HEARTBEAT_TIMEOUT + 1.second) do
+      travel(Hcb::OrganizationTransactions::STREAM_HEARTBEAT_TIMEOUT + 1.second) do
         WarmOrganizationTransactionsJob.perform_now(user.id, "org_1", full: true, stream_id: "stream-1")
       end
     end
@@ -82,7 +82,7 @@ class WarmOrganizationTransactionsJobTest < ActiveJob::TestCase
     service = Hcb::OrganizationTransactions.new(fake_client, "org_1")
     service.claim_full_reload!("stream-1")
     service.fetch_page(stream_id: "stream-1", limit: 2, reload: true)
-    assert_equal :running, service.resume_full_reload!("stream-1")
+    assert_equal :running, service.resume_stream!("stream-1")
 
     Hcb::Client.stub(:for_user, ->(_u) { fake_client }) do
       assert_no_enqueued_jobs do
@@ -105,7 +105,7 @@ class WarmOrganizationTransactionsJobTest < ActiveJob::TestCase
     service.claim_full_reload!("stream-1")
 
     Hcb::Client.stub(:for_user, ->(_u) { fake_client }) do
-      travel(Hcb::OrganizationTransactions::FULL_RELOAD_HEARTBEAT_TIMEOUT + 1.second) do
+      travel(Hcb::OrganizationTransactions::STREAM_HEARTBEAT_TIMEOUT + 1.second) do
         assert_raises(RuntimeError) do
           WarmOrganizationTransactionsJob.perform_now(user.id, "org_1", full: true, stream_id: "stream-1")
         end
