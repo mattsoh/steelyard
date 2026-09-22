@@ -7,6 +7,7 @@ module Hcb
     TRANSACTION_ENGINE = ENV.fetch("HCB_TRANSACTION_ENGINE", "ledger").presence
 
     HEADERS = TRANSACTION_ENGINE ? { "X-HCB-Transaction-Engine" => TRANSACTION_ENGINE }.freeze : {}.freeze
+    def self.headers = HEADERS.dup
 
     def self.for_user(user) = new(user)
 
@@ -80,7 +81,7 @@ module Hcb
     def segment(value) = ERB::Util.url_encode(value.to_s)
 
     def get(path, **params)
-      response = timed { access_token.get(path, params: params.compact, headers: HEADERS) }
+      response = timed { access_token.get(path, params: params.compact, headers: self.class.headers) }
       JSON.parse(response.body)
     rescue OAuth2::Error => e
       # 401 is an expired/revoked token; 403 from HCB's "restricted" tokens

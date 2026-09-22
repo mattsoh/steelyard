@@ -45,6 +45,26 @@ class Hcb::ClientTest < ActiveSupport::TestCase
     assert_equal [ { "X-HCB-Transaction-Engine" => "ledger" } ] * 3, token.headers
   end
 
+  # oauth2 adds the Authorization header by merging it into the hash we pass
+  # (AccessToken#request), so a shared frozen hash raises FrozenError on every
+  # real request -- which the recording token above, storing the hash untouched,
+  # is too polite to notice.
+  class MutatingAccessToken < RecordingAccessToken
+    def get(path, params: {}, headers: {})
+      headers.merge!("Authorization" => "Bearer a")
+      super
+    end
+  end
+
+  test "request headers survive the client's own merge into them" do
+    token = MutatingAccessToken.new("{}")
+    client = client_with(token)
+    client.transaction("txn_1")
+    client.transaction("txn_2")
+
+    assert_equal [ { "X-HCB-Transaction-Engine" => "ledger", "Authorization" => "Bearer a" } ] * 2, token.headers
+  end
+
   test "comments returns the parsed array HCB answers with" do
     token = RecordingAccessToken.new('[{"content":"looks right to me"}]')
 
