@@ -6,15 +6,17 @@ class Hcb::ClientTest < ActiveSupport::TestCase
   # the thing that matters here is *which* HCB route gets asked, since a route
   # that doesn't exist falls through to v4's catch-all and 404s.
   class RecordingAccessToken
-    attr_reader :requests
+    attr_reader :requests, :headers
 
     def initialize(body = "[]")
       @body = body
       @requests = []
+      @headers = []
     end
 
-    def get(path, params: {})
+    def get(path, params: {}, headers: {})
       @requests << [ path, params ]
+      @headers << headers
       Struct.new(:body).new(@body)
     end
   end
@@ -29,6 +31,18 @@ class Hcb::ClientTest < ActiveSupport::TestCase
     client_with(token).comments("txn_1")
 
     assert_equal [ [ "/api/v4/comments", { transaction_id: "txn_1" } ] ], token.requests
+  end
+
+  # HCB serves the new transaction engine only to callers that name it; without
+  # this header every read here silently comes back off the legacy engine.
+  test "every request opts in to HCB's ledger transaction engine" do
+    token = RecordingAccessToken.new("{}")
+    client = client_with(token)
+    client.transaction("txn_1")
+    client.organization("org_1")
+    client.comments("txn_1")
+
+    assert_equal [ { "X-HCB-Transaction-Engine" => "ledger" } ] * 3, token.headers
   end
 
   test "comments returns the parsed array HCB answers with" do
