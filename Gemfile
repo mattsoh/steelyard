@@ -20,7 +20,7 @@ gem "tailwindcss-rails"
 gem "jbuilder"
 
 # OAuth2 client for authenticating against HCB's v4 API
-gem "oauth2", "~> 2.0"
+gem "oauth2", "~> 2.1"
 
 # Keep-alive HTTP for the HCB API. Faraday's default net_http adapter opens a
 # fresh TCP+TLS connection per request; against hcb.hackclub.com that handshake
