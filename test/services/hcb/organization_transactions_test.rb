@@ -907,4 +907,83 @@ class Hcb::OrganizationTransactionsTest < ActiveSupport::TestCase
     assert_equal %w[txn_1 txn_2], service.presented.keys.sort
     assert_equal %w[txn_1 txn_2], service.ledger_order[:ids]
   end
+  # HCB orders an organization's transactions by date and returns rows that
+  # share a date in an order that shifts between requests, so a cursor page
+  # can repeat the row its cursor sat on. Here every page after the first
+  # hands back the cursor row again, the way HCB does at a shifted boundary.
+  test "a drain publishes each transaction once when HCB's pages overlap" do
+    transactions = (1..7).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
+    client = FakeHcbClient.new(transactions: transactions)
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+
+    # Three to a page so the walk crosses two boundaries; each boundary row
+    # then arrives twice, as the end of one page and the start of the next.
+    overlapping = lambda do |after: nil, limit:|
+      rows = after ? transactions.drop_while { |t| t["id"] != after } : transactions
+      { "data" => rows.first(3), "has_more" => rows.size > 3, "total_count" => transactions.size }
+    end
+
+    task_id = service.start_task!(kind: :cold, requested_by: "Matthew")
+    service.stub(:page, overlapping) { service.run_task!(task_id) }
+
+    cached = Hcb::OrganizationTransactions.new(client, "org_1").all
+    assert_equal transactions.map { |t| t["id"] }, cached.map { |t| t["id"] }
+    assert_equal 7, service.sync_state[:count]
+    assert_equal 7, service.progress.read[:total_count]
+
+    texts = service.activity.read.map { |e| e[:text] }
+    assert texts.any? { |t| t.match?(/returned \d+ transactions? more than once/) }, texts.inspect
+    assert_match(/7 transactions published/, texts.last)
+  end
+
+  test "sync_head! keeps one copy of a transaction that moved into the newest page" do
+    old_transactions = (1..500).map { |n| { "id" => "txn_old_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
+    client = FakeHcbClient.new(transactions: old_transactions)
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+    service.all
+
+    # HCB now lists txn_old_300 at the head (its date moved, say), while the
+    # cached tail being spliced on still has it at its old position.
+    client.remove_transaction("txn_old_300")
+    client.add_transactions([ { "id" => "txn_old_300", "date" => "2026-02-01", "amount_cents" => 300_00 } ])
+
+    assert_equal :synced, service.sync_head!
+
+    cached = Hcb::OrganizationTransactions.new(client, "org_1").all
+    assert_equal 500, cached.size
+    assert_equal 1, cached.count { |t| t["id"] == "txn_old_300" }
+    # The freshly fetched copy, not the stale one from the tail.
+    assert_equal "txn_old_300", cached.first["id"]
+    assert_equal 300_00, cached.first["amount_cents"]
+    assert_equal 500, service.sync_state[:count]
+  end
+
+  test "a drain says so when HCB's count shows rows fell between its pages" do
+    transactions = (1..5).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
+    client = FakeHcbClient.new(transactions: transactions)
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+
+    # HCB counts six; the pages only ever hand over five.
+    short = ->(after: nil, limit:) { client.transactions("org_1", after: after, limit: limit).merge("total_count" => 6) }
+
+    task_id = service.start_task!(kind: :cold, requested_by: "Matthew")
+    service.stub(:page, short) { service.run_task!(task_id) }
+
+    assert_equal 5, Hcb::OrganizationTransactions.new(client, "org_1").all.size
+    warning = service.activity.read.find { |e| e[:kind] == "warn" }
+    assert warning, service.activity.read.inspect
+    assert_match(/has 6 transactions but 5 were published/, warning[:text])
+    assert_equal task_id, warning[:task_id]
+  end
+
+  test "a drain whose count matches HCB's does not warn" do
+    transactions = (1..3).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
+    client = FakeHcbClient.new(transactions: transactions)
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+
+    task_id = service.start_task!(kind: :cold, requested_by: "Matthew")
+    service.run_task!(task_id)
+
+    assert_empty service.activity.read.select { |e| e[:kind] == "warn" }
+  end
 end

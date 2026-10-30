@@ -433,8 +433,12 @@ module Hcb
 
         progress.phase!("publishing")
         activity.append("publishing #{result.size} transactions and rebuilding the derived caches…", task_id: task_id)
-        publish(result)
+        # Read before #publish finishes the progress record, which overwrites
+        # total_count with what was actually published.
+        expected = progress.read&.dig(:total_count)
+        result = publish(result)
         forget_task_pages
+        warn_if_short!(result.size, expected, task_id: task_id)
 
         elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
         activity.append("done — #{result.size} transactions published in #{elapsed.round(1)}s", kind: "done", task_id: task_id)
@@ -798,6 +802,8 @@ module Hcb
     # single transaction re-fetched in place), which must not close out the
     # record of one that may be running.
     def publish(result, finish_progress: true)
+      result = unique_by_id(result)
+
       # Stamped before anything else is written, so the token every reader
       # validates its local copy against is the one belonging to *this* drain
       # -- including this instance's own memo, which the stamp assignment
@@ -818,6 +824,52 @@ module Hcb
       # cache the result is served from already written.
       progress.finish!(count: result.size) if finish_progress
       result
+    end
+
+    # One row per transaction id, first occurrence kept. Nothing downstream can
+    # cope with the same id twice: the running balance and the matcher's
+    # unmatched totals sum rows, so a repeated row counts its amount twice,
+    # and a match then removes every copy at once -- which is how a set of
+    # perfectly balanced matches once moved an organization's unmatched net by
+    # exactly the amount of its duplicated rows.
+    #
+    # Duplicates come from HCB, not from anything here. api/v4 orders an
+    # organization's transactions by date, and rows sharing a date come back
+    # in an order that differs from one request to the next -- two identical
+    # requests for the same day were observed to return the same rows shifted
+    # by one. Cursor pagination slices each page out of a freshly ordered
+    # list, so a row sitting near a page boundary can land on both pages (and
+    # another on neither; see #warn_if_short!). The splice paths add a second
+    # way: a transaction that has moved into the freshly fetched head is still
+    # sitting at its old position in the cached tail being spliced on.
+    #
+    # First occurrence wins on purpose. Every list this sees is newest-first
+    # with the freshly fetched rows at the front, so when a stale cached copy
+    # and a fresh one disagree, the fresh one is the one kept.
+    def unique_by_id(result)
+      unique = result.uniq { |t| t["id"] }
+      dropped = result.size - unique.size
+      if dropped.positive?
+        activity.append(
+          "HCB returned #{dropped} transaction#{'s' unless dropped == 1} more than once — its page order shifts between requests, so a page boundary can repeat a row; one copy of each was kept",
+          kind: "warn"
+        )
+      end
+      unique
+    end
+
+    # The flip side of a repeated row: the same shifting order can drop a row
+    # between two pages, and nothing in the walk can see a gap it was never
+    # handed. HCB's own total_count can. Said in the log rather than acted on
+    # -- a reload is the only thing that might recover them, and it might
+    # reproduce the gap, so that's the viewer's call to make.
+    def warn_if_short!(published, expected, task_id: nil)
+      return unless expected && published < expected
+
+      activity.append(
+        "HCB says this organization has #{expected} transactions but #{published} were published — its page order shifted during the walk and #{expected - published} fell between pages; a full reload may pick them up",
+        kind: "warn", task_id: task_id
+      )
     end
 
     # Computed once per drain (see #publish), not per request -- this is the
