@@ -66,6 +66,15 @@ function writeCachedRows(token, rows, totalCount) {
   // create something to mistrust later.
   if (!token) return;
   try {
+    // Sized from a sample before serializing the lot: stringifying fifty
+    // thousand rows to discover they don't fit is tens of megabytes of string
+    // built and thrown away on every load of a large organization.
+    const sample = rows.slice(0, 50);
+    const estimate = sample.length ? (JSON.stringify(sample).length / sample.length) * rows.length : 0;
+    if (estimate > ROWS_CACHE_MAX_BYTES) {
+      localStorage.removeItem(rowsCacheKey());
+      return;
+    }
     const payload = JSON.stringify({ token, savedAt: Date.now(), rows, totalCount });
     if (payload.length > ROWS_CACHE_MAX_BYTES) {
       // Drop whatever is there rather than leaving an older, smaller entry to

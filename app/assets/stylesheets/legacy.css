@@ -1472,6 +1472,19 @@ tr.zero-point { background: #fff8c5; }
 }
 
 
+/* ── Windowed lists ──────────────────────────────────────────────────────────
+   The "N more — scroll for more" marker at the end of what a list has rendered
+   so far (see windowed_list.js). Scrolling it into view appends the next
+   chunk, so it is only ever briefly visible. */
+.windowed-sentinel {
+  padding: 10px 12px;
+  color: #8c959f;
+  font-size: 12px;
+  text-align: center;
+}
+
+tr.windowed-sentinel td { padding: 10px 12px; color: #8c959f; font-size: 12px; text-align: center; }
+
 /* ── HCB activity log ──────────────────────────────────────────────────────
    Both the matcher and the ledger wait on HCB for real amounts of time (a cold
    load is a round trip per hundred transactions; a full reload re-walks the

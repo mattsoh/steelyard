@@ -470,11 +470,12 @@ function renderProvisional(totalCount) {
     ? `Loading… ${provisional.length} of ~${totalCount}`
     : `Loading… ${provisional.length}…`;
   const body = document.getElementById("ledger-body");
-  body.innerHTML = provisional.map((r) => {
+  rowsById = new Map(provisional.map((r) => [r.id, r]));
+  renderWindowed(body, provisional, (r) => {
     const dirClass = r.amount > 0 ? "amt-in" : "amt-out";
     const status = rowStatus(r);
     const statusClass = status === "discrepancy" ? "ledger-discrepancy" : status === "matched" ? "ledger-matched" : "";
-    return `<tr class="${statusClass}">
+    return `<tr class="${statusClass}" data-id="${escapeHtml(String(r.id))}">
       <td>${r.date}</td>
       <td class="memo-cell" title="${escapeHtml(r.memo)}">${escapeHtml(r.memo)}${hcbCodeHtml(r)}${hcbLinkHtml(r)}</td>
       <td class="num ${dirClass}">${fmt(r.amount)}</td>
@@ -482,12 +483,41 @@ function renderProvisional(totalCount) {
       <td>${escapeHtml(r.user_name)}</td>
       <td>${escapeHtml(r.category_label)}</td>
     </tr>`;
-  }).join("");
+  }, LEDGER_WINDOW);
 
   // These rows are replaced wholesale by render() once the drain finishes, but
   // they're on screen and clickable for as long as it takes, so the codes in
   // them have to copy too.
-  wireRowControls(body);
+  delegateLedgerRows(body);
+}
+
+// The rows on screen, by id, for the delegated click handler below. Rendering
+// is windowed (windowed_list.js) and rows are appended as the table is
+// scrolled, so a listener per row would have to be re-attached per chunk;
+// one handler on the body covers rows that haven't been rendered yet.
+let rowsById = new Map();
+let ledgerRowsDelegated = false;
+
+const LEDGER_WINDOW = {
+  root: document.querySelector(".ledger-table-wrap"),
+  sentinel: "tr",
+  span: 6,
+  label: "transactions",
+};
+
+function delegateLedgerRows(body) {
+  if (ledgerRowsDelegated) return;
+  ledgerRowsDelegated = true;
+
+  // Codes and HCB links inside the rows.
+  delegateRowControls(body, null);
+  body.addEventListener("click", (e) => {
+    if (e.target.closest(".hcb-code, .hcb-link, .info-icon")) return;
+    const tr = e.target.closest("tr[data-id]");
+    if (!tr) return;
+    const row = rowsById.get(tr.dataset.id);
+    if (row) showDetailsModal(row);
+  });
 }
 
 function applyMatches(matches) {
@@ -541,12 +571,13 @@ function render() {
       dateInRange(r.date, afterFilter, beforeFilter)
   );
 
-  body.innerHTML = rows.map((r) => {
+  rowsById = new Map(rows.map((r) => [r.id, r]));
+  renderWindowed(body, rows, (r) => {
     const dirClass = r.amount > 0 ? "amt-in" : "amt-out";
     const status = rowStatus(r);
     const statusClass = status === "discrepancy" ? "ledger-discrepancy" : status === "matched" ? "ledger-matched" : "";
     const rowClass = [statusClass, r.is_zero_point ? "zero-point" : ""].filter(Boolean).join(" ");
-    return `<tr class="${rowClass}" ${r.is_zero_point ? 'id="zero-point-row"' : ""}>
+    return `<tr class="${rowClass}" ${r.is_zero_point ? 'id="zero-point-row"' : ""} data-id="${escapeHtml(String(r.id))}">
       <td>${r.date}</td>
       <td class="memo-cell" title="${escapeHtml(r.memo)}">${escapeHtml(r.memo)}${hcbCodeHtml(r)}${hcbLinkHtml(r)}${r.is_zero_point ? ' <span class="zero-badge">balance hit $0 here</span>' : ""}</td>
       <td class="num ${dirClass}">${fmt(r.amount)}</td>
@@ -554,12 +585,9 @@ function render() {
       <td>${escapeHtml(r.user_name)}</td>
       <td>${escapeHtml(r.category_label)}</td>
     </tr>`;
-  }).join("");
+  }, LEDGER_WINDOW);
 
-  body.querySelectorAll("tr").forEach((tr, idx) => {
-    tr.addEventListener("click", () => showDetailsModal(rows[idx]));
-  });
-  wireRowControls(body);
+  delegateLedgerRows(body);
 
   saveLedgerFilters();
 }

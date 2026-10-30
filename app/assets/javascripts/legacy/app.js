@@ -822,15 +822,21 @@ function renderLists() {
   const rowClass = (t, selectedIds, selectedClass) =>
     used.has(t.id) ? "matched" : selectedIds.includes(t.id) ? selectedClass : "";
 
+  // Windowed (see windowed_list.js): the DOM holds the rows somebody has
+  // scrolled to, not every transaction after the cutoff.
   const inList = document.getElementById("list-incoming");
-  inList.innerHTML = incoming.length
-    ? incoming.map((t) => matchesRowHtml(t, rowClass(t, selectedIncomingIds, "active"))).join("")
-    : emptyHtml(showMatchedIncoming);
+  if (incoming.length) {
+    renderWindowed(inList, incoming, (t) => matchesRowHtml(t, rowClass(t, selectedIncomingIds, "active")), { label: "incoming" });
+  } else {
+    inList.innerHTML = emptyHtml(showMatchedIncoming);
+  }
 
   const outList = document.getElementById("list-outgoing");
-  outList.innerHTML = outgoing.length
-    ? outgoing.map((t) => matchesRowHtml(t, rowClass(t, selectedOutgoingIds, "selected"))).join("")
-    : emptyHtml(showMatchedOutgoing);
+  if (outgoing.length) {
+    renderWindowed(outList, outgoing, (t) => matchesRowHtml(t, rowClass(t, selectedOutgoingIds, "selected")), { label: "outgoing" });
+  } else {
+    outList.innerHTML = emptyHtml(showMatchedOutgoing);
+  }
 
   delegateListControls(inList, outList);
 
@@ -895,6 +901,11 @@ function jumpToMatchForTransaction(transactionId) {
   const matchId = matchIdForTransaction(transactionId);
   if (matchId === null) return false;
   revealMatchRow(matchId);
+  // The lists are windowed, so the row may not be in the DOM yet even though
+  // the match is listed; render up to it first.
+  for (const id of ["matches-unbalanced-list", "matches-balanced-list"]) {
+    if (revealWindowedItem(document.getElementById(id), (m) => m.id === matchId)) break;
+  }
   const row = document.getElementById(`match-row-${matchId}`);
   if (!row) return true;
 
@@ -1459,7 +1470,7 @@ function renderMatchGroup(group, listId, countId, emptyMsg, { showHidden, hidden
   }
 
   const sorted = [...shown].sort(byRecentlyTouched);
-  list.innerHTML = sorted.map(matchRowHtml).join("");
+  renderWindowed(list, sorted, matchRowHtml, { chunk: 100, label: "matches" });
 
   delegateMatchListControls(list);
   return shown.length;
