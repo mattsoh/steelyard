@@ -183,7 +183,7 @@ function absorbServerActivity(payload) {
 // logged since the caller last asked.
 async function syncStatus() {
   try {
-    const res = await fetch(withLogCursor(new URL(`${orgApiBase()}/api/transactions/sync_status`, window.location.origin)));
+    const res = await fetch(withLogCursor(new URL(`${orgApiBase()}/api/transactions/sync_status`, window.location.origin)).toString());
     if (!res.ok) return null;
     const status = await res.json();
     absorbServerActivity(status);
@@ -285,7 +285,10 @@ async function syncNewTransactions({ onSyncing, onProgress } = {}) {
   let started;
   logActivity("asking HCB whether anything new has landed…");
   try {
-    const res = await fetch(withLogCursor(new URL(`${orgApiBase()}/api/transactions/refresh`, window.location.origin)), { method: "POST" });
+    // A string, not a URL object: the CSRF shim (hcb_csrf_shim.js) attaches the
+    // token to same-origin non-GET requests, and it has to be able to read the
+    // URL off whatever is passed.
+    const res = await fetch(withLogCursor(new URL(`${orgApiBase()}/api/transactions/refresh`, window.location.origin)).toString(), { method: "POST" });
     if (!res.ok) {
       logActivity(`the check failed (HTTP ${res.status})`, "error");
       return false;
@@ -356,7 +359,7 @@ async function fullReloadTransactions({ onSyncing, onPage, onProgress } = {}) {
   let started;
   logActivity("full reload requested…", "warn");
   try {
-    const res = await fetch(withLogCursor(new URL(`${orgApiBase()}/api/transactions/reload`, window.location.origin)), { method: "POST" });
+    const res = await fetch(withLogCursor(new URL(`${orgApiBase()}/api/transactions/reload`, window.location.origin)).toString(), { method: "POST" });
     if (!res.ok) {
       logActivity(`the full reload wouldn't start (HTTP ${res.status})`, "error");
       return false;

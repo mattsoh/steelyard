@@ -8,8 +8,12 @@
   // window.fetch globally -- including calls this file knows nothing about --
   // and a token attached to a cross-origin request is handed to whoever answers
   // it.
+  // fetch() accepts a string, a URL object or a Request; the token must be
+  // attached whichever form the caller used, or a same-origin POST made with a
+  // URL object fails CSRF verification (which is what happened to the
+  // automatic "check for new" on every page load).
   function sameOrigin(input) {
-    var url = typeof input === "string" ? input : (input && input.url);
+    var url = typeof input === "string" ? input : (input && (input.href || input.url));
     if (!url) return false;
     try {
       return new URL(url, window.location.href).origin === window.location.origin;
