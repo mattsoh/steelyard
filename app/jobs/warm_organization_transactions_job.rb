@@ -16,7 +16,15 @@
 class WarmOrganizationTransactionsJob < ApplicationJob
   queue_as :default
 
-  def perform(user_id, organization_id, filters: {}, task_id: nil)
+  # `**legacy` catches the arguments the previous design queued this job with
+  # (`full:`, `stream_id:`, `check:`). Production never ran a worker until the
+  # one in Puma, so hundreds of them are waiting, and each would otherwise fail
+  # on ArgumentError when it is finally picked up -- or, run, splice a drain
+  # nobody asked for. Whatever they were standing behind is long since done or
+  # will be redone on request, so they are simply discarded.
+  def perform(user_id, organization_id, filters: {}, task_id: nil, **legacy)
+    return if legacy.any?
+
     user = User.find_by(id: user_id)
     return unless user
 

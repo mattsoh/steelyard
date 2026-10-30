@@ -323,9 +323,18 @@ module Hcb
 
         # Nobody is advancing the task that holds the claim: the job never got
         # picked up, or the worker running it died. Take it over rather than
-        # waiting for the claim to expire.
+        # waiting for the claim to expire -- and say which, because a task that
+        # never left "starting" means no job worker ran it at all, which is a
+        # deployment problem the next task will have too.
         Rails.cache.write(task_claim_key, claim, expires_in: TASK_CLAIM_TTL)
-        activity.append("the previous load stopped responding — taking it over", kind: "warn", task_id: task_id)
+        if previous && previous[:phase] == "starting"
+          activity.append(
+            "the previous load was never picked up by a background worker — is the job worker running? (Solid Queue: SOLID_QUEUE_IN_PUMA=true, or bin/jobs)",
+            kind: "error", task_id: task_id
+          )
+        else
+          activity.append("the previous load stopped responding — taking it over", kind: "warn", task_id: task_id)
+        end
       end
       if resume_pages.positive?
         activity.append("#{resume_pages} page#{'s' unless resume_pages == 1} from the previous attempt are still here — picking up from page #{resume_pages + 1}", task_id: task_id)

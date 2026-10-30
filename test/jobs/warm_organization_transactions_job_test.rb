@@ -25,6 +25,22 @@ class WarmOrganizationTransactionsJobTest < ActiveJob::TestCase
     assert_equal 1, fake_client.transactions_calls
   end
 
+  test "a job queued by the previous design, with arguments this one no longer takes, is discarded rather than failed" do
+    user = User.create!(hcb_user_id: "usr_1", access_token: "a", refresh_token: "b", token_expires_at: 1.hour.from_now)
+    fake_client = FakeHcbClient.new(transactions: [ { "id" => "txn_1", "date" => "2026-01-01", "amount_cents" => 1 } ])
+
+    Hcb::Client.stub(:for_user, ->(_u) { fake_client }) do
+      assert_nothing_raised do
+        WarmOrganizationTransactionsJob.perform_now(user.id, "org_1", full: true, stream_id: "old-stream", check: 2)
+      end
+    end
+
+    # Hundreds of these fire the moment production first runs a worker; a
+    # refresh apiece would be a burst against the HCB rate limit for nothing.
+    assert_equal 0, fake_client.transactions_calls
+    assert_nil Hcb::OrganizationTransactions.new(fake_client, "org_1").sync_state[:fetched_at]
+  end
+
   test "does nothing when the user no longer exists" do
     assert_nothing_raised { WarmOrganizationTransactionsJob.perform_now(-1, "org_1") }
   end

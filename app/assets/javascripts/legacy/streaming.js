@@ -204,6 +204,10 @@ function progressSnapshot(status, extra = {}) {
     // presumed gone. Worth showing, because a stalled walk and a slow one look
     // identical from here and mean very different things.
     stalled: !!(p && p.stalled),
+    // Seconds since the server last advanced the record. A task that has sat
+    // in "starting" for long is one no job worker has picked up, which is
+    // worth saying outright rather than leaving as a bar that never moves.
+    age: (p && typeof p.age === "number") ? p.age : null,
     error: (p && p.error) || null,
   };
 }

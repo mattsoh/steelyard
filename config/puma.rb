@@ -35,8 +35,18 @@ port ENV.fetch("PORT", 3000)
 # Allow puma to be restarted by `bin/rails restart` command.
 plugin :tmp_restart
 
-# Run the Solid Queue supervisor inside of Puma for single-server deployments
-plugin :solid_queue if ENV["SOLID_QUEUE_IN_PUMA"]
+# Run the Solid Queue supervisor inside of Puma.
+#
+# On by default in production, so a production server works its own queue
+# without anyone having to remember to start a worker beside it. Every load of
+# an organization's transactions is a job now (WarmOrganizationTransactionsJob,
+# started by the request that finds the organization cold), so a production
+# server with no worker renders nothing -- which is exactly what happened when
+# this was opt-in: the app was deployed from the Dockerfile with no
+# SOLID_QUEUE_IN_PUMA set, and not one job ever ran. Set it to "false" to run
+# workers separately (bin/jobs, or a Kamal `job` role) instead.
+solid_queue_in_puma = ENV.fetch("SOLID_QUEUE_IN_PUMA") { ENV.fetch("RAILS_ENV", "development") == "production" ? "true" : "false" }
+plugin :solid_queue unless %w[false 0 no off].include?(solid_queue_in_puma.to_s.strip.downcase)
 
 # Specify the PID file. Defaults to tmp/pids/server.pid in development.
 # In other environments, only set the PID file if requested.

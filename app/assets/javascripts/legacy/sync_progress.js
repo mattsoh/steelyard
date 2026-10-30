@@ -19,6 +19,12 @@
 // over the data it was describing.
 const SYNC_PROGRESS_DISMISS_MS = 1200;
 
+// A task still in "starting" after this long has not been picked up by any job
+// worker: Solid Queue isn't running, or the queue it's working isn't this one.
+// Said outright, once, because the bar otherwise looks merely slow.
+const SYNC_PROGRESS_NO_WORKER_S = 20;
+let syncProgressNoWorkerNoted = false;
+
 let syncProgressHideTimer = null;
 
 function syncProgressEl(id) {
@@ -50,7 +56,19 @@ function syncProgressNote(snapshot) {
   if (snapshot.stalled) {
     return `${by}It has stopped responding — the next request will pick it up from where it left off.`;
   }
-  if (snapshot.phase === "starting")   return `${by}Waiting for a background worker to pick it up…`;
+  if (snapshot.phase === "starting") {
+    if (snapshot.age !== null && snapshot.age >= SYNC_PROGRESS_NO_WORKER_S) {
+      if (!syncProgressNoWorkerNoted) {
+        syncProgressNoWorkerNoted = true;
+        logActivity(
+          `no background worker has picked this load up in ${Math.round(snapshot.age)}s — is the job worker running? (Solid Queue: SOLID_QUEUE_IN_PUMA=true, or bin/jobs)`,
+          "error",
+        );
+      }
+      return `${by}No background worker has picked this up for ${Math.round(snapshot.age)}s — is the job worker (Solid Queue) running?`;
+    }
+    return `${by}Waiting for a background worker to pick it up…`;
+  }
   if (snapshot.phase === "publishing") return `${by}Finishing up — organising what came back.`;
   if (snapshot.phase === "splicing")   return `${by}Joining the new activity onto what was already loaded.`;
   if (snapshot.source === "inline")    return `${by}Running inside a request on the server.`;
@@ -84,7 +102,10 @@ function renderSyncProgress(snapshot) {
   }
 
   panel.classList.remove("hidden");
-  panel.classList.toggle("sync-progress-stalled", !!snapshot.stalled);
+  panel.classList.toggle(
+    "sync-progress-stalled",
+    !!snapshot.stalled || (snapshot.phase === "starting" && snapshot.age !== null && snapshot.age >= SYNC_PROGRESS_NO_WORKER_S),
+  );
   panel.classList.toggle("sync-progress-failed", snapshot.phase === "failed");
 
   syncProgressEl("sync-progress-label").textContent = syncProgressLabel(snapshot);
