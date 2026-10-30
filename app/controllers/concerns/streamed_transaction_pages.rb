@@ -1,90 +1,99 @@
-# The one-page-at-a-time endpoint the matcher and the ledger both stream from.
-# Same rows either way (Hcb::TransactionPresenter's shape) -- they just lay them
-# out differently -- so the paging, the full-reload mode, and the background
-# handover below live here rather than twice.
+# The endpoint the matcher and the ledger both load their rows through. Same
+# rows either way (Hcb::TransactionPresenter's shape) -- they just lay them out
+# differently -- so this lives here rather than twice.
+#
+# It answers one of two ways. Warm: the whole drained history in one response,
+# pre-serialized from the drain's presentation cache. Cold: the task that is
+# building it (started here if nothing is), with the pages that task has
+# fetched so far and the activity it has logged. The caller renders those
+# pages, then polls with `after_page` set to how many it has, until a response
+# comes back warm.
+#
+# Nothing here depends on which browser asked. The task runs in a job, every
+# viewer polls the same record, and a tab that joins half-way gets every page
+# the task has already fetched in its first response.
 module StreamedTransactionPages
   extend ActiveSupport::Concern
 
   private
 
-  def streamed_page_json
+  def render_streamed_page
     transactions = Hcb::OrganizationTransactions.new(hcb_client, organization_id)
-    stream_id = params[:stream_id].to_s
-    reload = params[:reload].present?
-    first_page = params[:after].blank?
+    log_after = params[:log_after].presence
 
-    # Reload mode re-walks the organization's entire history from HCB, which is
-    # why it's claimed (Api::TransactionsController#reload) before it's streamed
-    # and only honoured for the stream holding that claim. Without this check
-    # it'd be a full-history drain any caller could ask for at will, against a
-    # rate limit the whole organization shares -- and two tabs could each start
-    # one. A caller that lost the claim gets :conflict rather than the ordinary
-    # cached page, so it can tell "someone else is reloading, wait for theirs"
-    # from "here is the data you asked to re-read".
-    return :conflict if reload && !transactions.full_reload_stream?(stream_id)
-
-    result = transactions.fetch_page(stream_id: stream_id, after: params[:after].presence, reload: reload)
-
-    # A cold first drain has just been claimed by this browser, so something has
-    # to stand behind it. Queued on the first page only, and only when the walk
-    # is actually going to take more than one -- a one-page organization is
-    # finished and released by the time this line is reached.
-    #
-    # This is what makes closing the tab cost the walk some time rather than all
-    # of it: the job waits for the stream's heartbeat to lapse (or for the
-    # handoff beacon to say it's gone), then finishes from the pages already
-    # buffered. Reload mode queues its own equivalent in #reload, before the
-    # purge, so it isn't duplicated here.
-    if !reload && first_page && result[:has_more]
-      WarmOrganizationTransactionsJob
-        .set(wait: WarmOrganizationTransactionsJob::FALLBACK_DELAY)
-        .perform_later(current_user.id, organization_id, full: true, stream_id: stream_id)
+    cached = transactions.full_reload_running? ? nil : transactions.cached_all
+    if cached
+      render json: warm_page_json(transactions, cached, log_after: log_after)
+      return
     end
 
-    {
-      rows: result[:data].map { |t| Hcb::TransactionPresenter.new(t).as_json },
-      has_more: result[:has_more],
-      next_after: result[:next_after],
-      total_count: result[:total_count],
-      # What this page actually cost, and how much of it was HCB. The page's
-      # activity log reads this to say whether a slow load is us or them, which
-      # is otherwise pure guesswork from the outside -- a warm page is a couple
-      # of cache reads, a cold one is a round trip to HCB per hundred rows.
-      hcb: hcb_client.stats,
-      # Passed through, not dropped: an empty page during a full reload means
-      # "wait for the drain that's rebuilding this" rather than "there are no
-      # transactions", and the client can only tell the two apart from this.
-      reloading: result[:reloading].present?,
-      # Answered entirely from cache -- every row, no HCB request. The client
-      # stops streaming here and goes straight to the authoritative view rather
-      # than asking for a second page it already knows is empty.
-      warm: result[:warm].present?,
-      # Recent activity was spliced onto the previous drain inside this one
-      # request, so this single page IS the whole history. Same short-circuit as
-      # `warm`, different reason, and worth distinguishing in the activity log.
-      spliced: result[:spliced].present?,
-      # Somebody else's walk owns this organization. Not an error and not an
-      # empty organization: the caller waits for their result instead of buying
-      # a second copy of it out of the shared rate limit.
-      waiting: result[:waiting].present?,
-      # So a stream that is handing over (or one that just took over) can tell
-      # the client how far the *walk* has got, not just this page.
-      streamed: result[:streamed],
-      stream_id: stream_id.presence,
-      # Only on the page that finishes the walk, which is the only point at
-      # which a token exists to name the result. It is what the browser keys
-      # its own copy of these rows against, so the next load can prove the copy
-      # is current with one small request instead of re-reading the
-      # organization. Costs a cache read on the last page of a walk, not on
-      # every page of it.
-      token: (transactions.drain_token unless result[:has_more])
+    task = transactions.ensure_loaded!(
+      requested_by: requester_name,
+      user_id: current_user.id,
+      # The explicit retry after a failed load -- without it, a recent failure
+      # is left alone rather than restarted by every poll (see
+      # Hcb::OrganizationTransactions::FAILURE_BACKOFF).
+      force: params[:retry].present?
+    )
+
+    # The task landed between the check above and this one. Its result is
+    # warm now, so answer with that rather than an empty page the caller would
+    # have to come back for.
+    cached = transactions.cached_all unless task && task[:running]
+    if cached
+      render json: warm_page_json(transactions, cached, log_after: log_after)
+      return
+    end
+
+    after_page = params[:after_page].to_i
+    rows = transactions.task_pages(after_page).map { |t| Hcb::TransactionPresenter.new(t).as_json }
+
+    render json: {
+      warm: false,
+      rows: rows,
+      # How many pages the rows above bring the caller up to -- what it passes
+      # back as `after_page` next time.
+      pages_done: task && task[:kind].in?(Hcb::DrainProgress::BUFFERED_KINDS) ? task[:pages_done].to_i : 0,
+      total_count: task && task[:total_count],
+      progress: task,
+      log: transactions.activity.read(after: log_after),
+      hcb: hcb_client.stats
     }
   end
 
-  def render_streamed_page
-    json = streamed_page_json
-    return render json: { error: "Another full reload is already running." }, status: :conflict if json == :conflict
+  # Assembled as a string rather than a Hash handed to #to_json, for the same
+  # reason Api::TransactionsController#index is: the rows come out of the
+  # presentation cache already serialized, and re-parsing them to re-generate
+  # identical bytes is the single most expensive thing this endpoint could do.
+  # The fallback presents inline for a drain whose presentation cache hasn't
+  # landed yet (an older cache entry, a side cache that expired first).
+  def warm_page_json(transactions, cached, log_after:)
+    presented = transactions.presented
+    fragments =
+      if presented && cached.all? { |t| presented.key?(t["id"]) }
+        cached.map { |t| presented[t["id"]] }
+      else
+        cached.map { |t| Hcb::TransactionPresenter.new(t).as_json.to_json }
+      end
 
-    render json: json
+    json_object(
+      warm: true.to_json,
+      rows: "[#{fragments.join(',')}]",
+      pages_done: 0.to_json,
+      total_count: cached.size.to_json,
+      # What the browser keys its own copy of these rows against, so the next
+      # load can prove the copy is current with one small request instead of
+      # re-reading the organization.
+      token: transactions.drain_token.to_json,
+      progress: transactions.progress.read.to_json,
+      log: transactions.activity.read(after: log_after).to_json,
+      hcb: hcb_client.stats.to_json
+    )
+  end
+
+  # Who to record as having asked for a load, in the activity log everyone
+  # sees. The name HCB gave us, or the email where there isn't one.
+  def requester_name
+    current_user.name.presence || current_user.email.presence || "someone"
   end
 end

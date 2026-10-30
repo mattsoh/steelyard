@@ -297,12 +297,18 @@ async function loadAll() {
       render();
     }).catch(() => {});
 
-    // Render rows as pages stream in so the lists aren't a blank spinner for
-    // the full multi-page HCB drain. Cutoff filtering and matched/unmatched
-    // status can shift once the real data lands below -- rows may appear
-    // then disappear as the provisional (unfiltered) view is replaced by the
-    // authoritative one.
-    await loadPagesStreaming(`${API_BASE}/api/transactions/page`, (rows, totalCount) => {
+    // Render rows as the background task fetches them so the lists aren't a
+    // blank spinner for the full multi-page HCB drain. Cutoff filtering and
+    // matched/unmatched status can shift once the real data lands below --
+    // rows may appear then disappear as the provisional (unfiltered) view is
+    // replaced by the authoritative one. `replace` is the whole history
+    // arriving at once (the finished result, or this browser's cached copy),
+    // which supersedes whatever pages were rendered so far.
+    await loadPagesStreaming(`${API_BASE}/api/transactions/page`, (rows, totalCount, { replace } = {}) => {
+      if (replace) {
+        allTransactions = [];
+        byId = new Map();
+      }
       allTransactions.push(...rows);
       for (const t of rows) byId.set(t.id, t);
       updateLoadProgress(totalCount);
@@ -317,34 +323,22 @@ async function loadAll() {
     txData = await txRes.json();
     matchData = matchDataResolved;
 
-    // The walk that owns this organization hadn't published by the time the
-    // authoritative view was asked for, so there is genuinely nothing to render
-    // yet. Waiting for it and asking again is the whole recovery -- rendering
-    // this would tell someone their organization is empty while it is loading.
+    // The task building this organization hadn't published by the time the
+    // authoritative view was asked for (a new one started between the two
+    // requests), so there is genuinely nothing to render yet. Waiting for it
+    // and asking again is the whole recovery -- rendering this would tell
+    // someone their organization is empty while it is loading.
     if (isStillLoading(txData, txData.transactions)) {
-      logActivity("the authoritative view isn't ready yet — waiting for the drain to publish", "warn");
-      if (await waitForNewerDrain(null, SYNC_POLL_TIMEOUT_MS, { onProgress: renderSyncProgress })) return loadAll();
-      throw new Error("timed out waiting for the drain to publish");
+      logActivity("the authoritative view isn't ready yet — waiting for the load to publish", "warn");
+      if (await waitForNewerDrain(null, FULL_LOAD_POLL_TIMEOUT_MS, { onProgress: renderSyncProgress })) return loadAll();
+      throw new Error("timed out waiting for the load to publish");
     }
   } catch (e) {
     clearLoadProgress();
-    // Someone else's full reload owns this organization's history right now, so
-    // there is nothing to load until it lands -- waiting for it and loading
-    // once is the whole recovery, and it's not an error to report.
-    if (e instanceof ReloadInProgressError) {
-      showListsMessage(`<div class="empty-msg">A full reload of this organization is running — waiting for it to finish…</div>`);
-      if (await waitForReloadToLand({ onProgress: renderSyncProgress })) return loadAll();
-      hideSyncProgress();
-      showListsMessage(`<div class="empty-msg">Still reloading. <a href="#" class="nav-link load-retry">Retry</a></div>`);
-      document.querySelectorAll(".load-retry").forEach((el) => {
-        el.addEventListener("click", (ev) => {
-          ev.preventDefault();
-          loadAll();
-        });
-      });
-      return false;
-    }
-    showListsMessage(`<div class="empty-msg">Could not load transactions. <a href="#" class="nav-link load-retry">Retry</a></div>`);
+    const reason = e instanceof LoadFailedError
+      ? `The load failed${e.message ? `: ${escapeHtml(e.message)}` : ""}.`
+      : "Could not load transactions.";
+    showListsMessage(`<div class="empty-msg">${reason} <a href="#" class="nav-link load-retry">Retry</a></div>`);
     document.querySelectorAll(".load-retry").forEach((el) => {
       el.addEventListener("click", (ev) => {
         ev.preventDefault();
@@ -549,10 +543,14 @@ async function fullReloadTransactionsAndRender() {
         clearForFullReload();
       },
       // clearForFullReload emptied these, so the reload's pages render into the
-      // same provisional view an ordinary load streams into: rows appear as the
-      // walk progresses, and loadAll below replaces them with the authoritative
+      // same provisional view an ordinary load fills: rows appear as the task
+      // progresses, and loadAll below replaces them with the authoritative
       // (cutoff-filtered, match-aware) version once the drain has landed.
-      onPage: (rows, totalCount) => {
+      onPage: (rows, totalCount, { replace } = {}) => {
+        if (replace) {
+          allTransactions = [];
+          byId = new Map();
+        }
         allTransactions.push(...rows);
         for (const t of rows) byId.set(t.id, t);
         updateLoadProgress(totalCount);

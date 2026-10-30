@@ -466,7 +466,7 @@ class Api::MatchesControllerTest < ActionController::TestCase
 
     Hcb::Client.stub :new, @fake_client do
       stub_membership("reader") do
-        Hcb::OrganizationTransactions.new(@fake_client, "org_1").claim_full_reload!("stream-1")
+        Hcb::OrganizationTransactions.new(@fake_client, "org_1").start_task!(kind: :reload, requested_by: "someone", resume: false)
         get :index, params: { organization_id: "org_1" }
       end
     end

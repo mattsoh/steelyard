@@ -8,11 +8,12 @@
 // of the two questions anybody waiting actually has: how much is left, and is
 // this thing still moving?
 //
-// So this renders the server's own progress record (Hcb::DrainProgress), which
-// means it reads the same whether this tab is driving the walk, another tab is,
-// or a background job picked it up after somebody closed theirs. It also says
-// which of those is happening, because "safe to close this tab" is the single
-// most useful thing this page can tell someone watching a five-minute load.
+// So this renders the server's own progress record (Hcb::DrainProgress) of the
+// one background task loading the organization, which means it reads the same
+// in every tab -- the one that asked, one opened a minute later, one that came
+// back after being closed. It also says who started it and that closing the
+// tab is safe, because that is the single most useful thing this page can tell
+// someone watching a five-minute load.
 
 // Long enough to read "done" and see the bar full, short enough not to linger
 // over the data it was describing.
@@ -38,21 +39,23 @@ function syncProgressLabel(snapshot) {
   }
 }
 
-// The line under the bar: who is driving this, and therefore what the person
-// watching is free to do. This is the part that changed meaning -- a
-// browser-driven walk used to be lost if you closed the tab, and now isn't.
+// The line under the bar: who started this and what the person watching is
+// free to do. The walk is a background task's, never this tab's, so the answer
+// to "can I close this?" is always yes.
 function syncProgressNote(snapshot) {
   if (snapshot.phase === "failed") {
     return snapshot.error ? `HCB or Steelyard returned: ${snapshot.error}` : "Try again in a moment.";
   }
+  const by = snapshot.requestedBy ? `Started by ${snapshot.requestedBy}. ` : "";
   if (snapshot.stalled) {
-    return "The loader driving this stopped responding — a background job is picking it up from where it left off.";
+    return `${by}It has stopped responding — the next request will pick it up from where it left off.`;
   }
-  if (snapshot.phase === "publishing") return "Finishing up — organising what came back.";
-  if (snapshot.phase === "splicing")   return "Joining the new activity onto what was already loaded.";
-  if (snapshot.source === "background") return "Running in the background. You can close this tab.";
-  if (snapshot.source === "browser")    return "You can close this tab — it finishes in the background either way.";
-  return "";
+  if (snapshot.phase === "starting")   return `${by}Waiting for a background worker to pick it up…`;
+  if (snapshot.phase === "publishing") return `${by}Finishing up — organising what came back.`;
+  if (snapshot.phase === "splicing")   return `${by}Joining the new activity onto what was already loaded.`;
+  if (snapshot.source === "inline")    return `${by}Running inside a request on the server.`;
+  if (snapshot.source === "background") return `${by}Running in the background — you can close this tab, and other tabs see the same progress.`;
+  return by.trim();
 }
 
 // `loaded of ~total`, where the tilde is not decoration: HCB's total_count is

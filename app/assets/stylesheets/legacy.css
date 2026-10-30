@@ -1548,13 +1548,24 @@ tr.zero-point { background: #fff8c5; }
   word-break: break-word;
 }
 
-/* Elapsed since the page loaded, not a wall clock: what matters in a log like
-   this is how long something took, not when it happened. */
+/* Wall-clock time: the server's lines were written by a task that may have
+   started before this tab existed, and the same timestamp reads the same in
+   every tab where an elapsed time would not. */
 .activity-at {
-  flex: 0 0 3.5em;
+  flex: 0 0 5.2em;
   color: #8c959f;
   text-align: right;
 }
+
+/* A gear for a line the server recorded (shared by every viewer), a dot for
+   one this tab wrote about itself. */
+.activity-source {
+  flex: 0 0 1em;
+  color: #8c959f;
+  text-align: center;
+}
+
+.activity-from-server .activity-source { color: #656d76; }
 
 .activity-hcb { color: var(--in-color); }
 .activity-warn { color: var(--amber); }

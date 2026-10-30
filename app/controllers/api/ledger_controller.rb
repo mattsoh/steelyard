@@ -27,6 +27,10 @@ class Api::LedgerController < ApplicationController
   def index
     ledger = OrganizationLedger.new(hcb_client, organization_id)
     transactions = Hcb::OrganizationTransactions.new(hcb_client, organization_id)
+    # Same as Api::TransactionsController#index: a cold organization gets a
+    # background task and a "loading" answer, not a walk of HCB inside this
+    # request.
+    transactions.ensure_loaded!(requested_by: requester_name, user_id: current_user.id)
     # Ahead of the rows, because resolving the cutoff is what guarantees a
     # drain has happened at all -- and therefore that the presentation caches
     # the rows are assembled from have been written.

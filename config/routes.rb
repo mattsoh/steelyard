@@ -82,7 +82,6 @@ Rails.application.routes.draw do
       post   "transactions/refresh",     to: "transactions#refresh"
       post   "transactions/reload",      to: "transactions#reload"
       get    "transactions/sync_status", to: "transactions#sync_status"
-      post   "transactions/handoff",     to: "transactions#handoff"
       get    "transactions/:id/comments", to: "comments#index"
       post   "transactions/:id/refresh", to: "transactions#refresh_one"
       get    "matches",           to: "matches#index"

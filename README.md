@@ -27,6 +27,33 @@ All the secrets should be theoretically stored in `.env` (I think). An example s
 bin/rails test
 ```
 
+## Loading an organization from HCB
+
+Reading an organization's history out of HCB is one HCB request per hundred transactions, so a
+first load or a full reload of a large organization takes minutes. That walk runs as **one
+background task per organization** (`Hcb::OrganizationTransactions#run_task!`, in
+`WarmOrganizationTransactionsJob`), never inside a browser's request:
+
+- The first request to find the organization cold claims the task (a compare-and-set lock in the
+  cache) and queues the job. Every other request -- the same tab, another tab, another person --
+  attaches to that task instead of starting its own, so the shared HCB rate limit is spent once.
+- The task stamps its progress (`Hcb::DrainProgress`: kind, who asked, pages done) and keeps each
+  page it fetches in the cache as it lands. A tab that joins half-way is handed every page so far
+  in its first response and renders them, then polls for the rest. Closing the tab that asked
+  changes nothing.
+- What the task does is written to a per-organization **activity log** (`Hcb::ActivityLog`, the
+  "Activity" panel on both pages): who started the load, each page and how long HCB took over it,
+  the splice, the publish, any failure, plus every "check for new" and single-transaction re-check.
+  It is the same log in every tab, including one opened after the load finished, and it is kept
+  for a day.
+- A task nobody has advanced for `HCB_DRAIN_PROGRESS_STALE_AFTER` seconds is treated as dead: the
+  next request takes it over and carries on from the pages it left behind. A task that failed is
+  left alone for `HCB_TASK_FAILURE_BACKOFF` seconds (every open tab polls, and each poll restarting
+  it would be a tight loop against HCB) until someone presses Retry.
+
+The public API and MCP go through the same cache; an organization nobody has opened in the browser
+is drained inline, on their request, as a task like any other.
+
 ## Change history
 
 Every change to a match, its legs, its adjustments, and an organization's cutoff is written to the

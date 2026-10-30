@@ -103,23 +103,48 @@ class Api::LedgerControllerTest < ActionController::TestCase
     assert_equal 50.0, body["final_balance"]
   end
 
-  test "page returns presented transactions for a stream_id, with no more pages left" do
+  test "page returns every presented transaction once the organization is warm" do
     fake_client = FakeHcbClient.new(transactions: [
       { "id" => "txn_2", "date" => "2026-01-02", "memo" => "Grant", "amount_cents" => -5_000 },
       { "id" => "txn_1", "date" => "2026-01-01", "memo" => "Donation", "amount_cents" => 5_000 }
     ])
 
-    Hcb::Client.stub :new, fake_client do
-      stub_membership("reader") do
-        get :page, params: { organization_id: "org_1", stream_id: "s1" }
+    with_memory_cache do
+      Hcb::OrganizationTransactions.new(fake_client, "org_1").all
+
+      Hcb::Client.stub :new, fake_client do
+        stub_membership("reader") do
+          get :page, params: { organization_id: "org_1" }
+        end
       end
     end
 
     assert_response :success
     body = JSON.parse(response.body)
+    assert body["warm"]
     assert_equal [ "txn_2", "txn_1" ], body["rows"].map { |t| t["id"] }
-    assert_not body["has_more"]
-    assert_nil body["next_after"]
+    assert body["token"].present?
+  end
+
+  test "page on a cold organization answers with the task building it, the same one the matcher sees" do
+    fake_client = FakeHcbClient.new(transactions: [
+      { "id" => "txn_1", "date" => "2026-01-01", "memo" => "Donation", "amount_cents" => 5_000 }
+    ])
+
+    with_memory_cache do
+      Hcb::Client.stub :new, fake_client do
+        stub_membership("reader") do
+          get :page, params: { organization_id: "org_1" }
+        end
+      end
+    end
+
+    assert_response :success
+    body = JSON.parse(response.body)
+    assert_not body["warm"]
+    assert_empty body["rows"]
+    assert_equal "starting", body.dig("progress", "phase")
+    assert_equal 0, fake_client.transactions_calls
   end
 
   test "index renders the same body from the drain's cached rows as it does building them inline" do
@@ -140,14 +165,14 @@ class Api::LedgerControllerTest < ActionController::TestCase
     assert_response :success
     inline = JSON.parse(response.body)
 
-    previous_cache = Rails.cache
-    Rails.cache = ActiveSupport::Cache::MemoryStore.new
-    begin
-      Hcb::Client.stub :new, FakeHcbClient.new(transactions: raw) do
+    # Warm, the way the background task leaves it: every row already presented
+    # and ordered in the drain's side caches.
+    with_memory_cache do
+      cached_client = FakeHcbClient.new(transactions: raw)
+      Hcb::OrganizationTransactions.new(cached_client, "org_1").all
+      Hcb::Client.stub :new, cached_client do
         stub_membership("reader") { get :index, params: { organization_id: "org_1" } }
       end
-    ensure
-      Rails.cache = previous_cache
     end
     assert_response :success
 
@@ -178,5 +203,17 @@ class Api::LedgerControllerTest < ActionController::TestCase
 
     # The pending deposit isn't a row on the ledger either.
     assert_not_includes JSON.parse(response.body)["ledger"].map { |r| r["id"] }, "txn_pending_in"
+  end
+
+  private
+
+  # The test environment's :null_store keeps nothing between the warm-up and
+  # the request, which is exactly what these two tests are about.
+  def with_memory_cache
+    previous = Rails.cache
+    Rails.cache = ActiveSupport::Cache::MemoryStore.new
+    yield
+  ensure
+    Rails.cache = previous
   end
 end

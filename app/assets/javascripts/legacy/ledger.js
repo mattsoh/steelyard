@@ -146,12 +146,15 @@ async function load() {
       renderProvisional(lastTotalCount);
     }).catch(() => {});
 
-    await loadPagesStreaming(`${API_BASE}/api/ledger/page`, (rows, totalCount) => {
+    await loadPagesStreaming(`${API_BASE}/api/ledger/page`, (rows, totalCount, { replace } = {}) => {
       // Pages arrive in HCB's own order, which is by settled date -- close to
       // the order this table shows but not it, so they're re-sorted by the date
       // the rows actually display (see byDateDesc). Running balance and the
       // zero-point cutoff aren't knowable until the full history is in, so
       // they're left blank until the final, authoritative render below.
+      // `replace` is the whole history arriving at once, superseding the pages
+      // rendered so far.
+      if (replace) provisional = [];
       provisional.push(...rows.map((r) => ({ ...r, running_balance: null, is_zero_point: false })));
       provisional.sort(byDateDesc);
       lastTotalCount = totalCount;
@@ -166,30 +169,19 @@ async function load() {
     data = await ledgerRes.json();
     matchData = matchDataResolved;
 
-    // Same as the matcher's loadAll: empty because the walk hasn't published,
+    // Same as the matcher's loadAll: empty because the task hasn't published,
     // not because there is nothing to show.
     if (isStillLoading(data, data.ledger)) {
-      logActivity("the authoritative ledger isn't ready yet — waiting for the drain to publish", "warn");
-      if (await waitForNewerDrain(null, SYNC_POLL_TIMEOUT_MS, { onProgress: renderSyncProgress })) return load();
-      throw new Error("timed out waiting for the drain to publish");
+      logActivity("the authoritative ledger isn't ready yet — waiting for the load to publish", "warn");
+      if (await waitForNewerDrain(null, FULL_LOAD_POLL_TIMEOUT_MS, { onProgress: renderSyncProgress })) return load();
+      throw new Error("timed out waiting for the load to publish");
     }
   } catch (e) {
-    // Same as the matcher's loadAll: a full reload owns the history until it
-    // lands, so this waits it out and loads once rather than reporting a
-    // failure or rendering an empty ledger.
-    if (e instanceof ReloadInProgressError) {
-      showLedgerMessage(`<div class="empty-msg">A full reload of this organization is running — waiting for it to finish…</div>`);
-      if (await waitForReloadToLand({ onProgress: renderSyncProgress })) return load();
-      hideSyncProgress();
-      showLedgerMessage(`<div class="empty-msg">Still reloading. <a href="#" class="nav-link load-retry">Retry</a></div>`);
-      document.querySelector(".load-retry").addEventListener("click", (ev) => {
-        ev.preventDefault();
-        load();
-      });
-      return false;
-    }
     hideSyncProgress();
-    showLedgerMessage(`<div class="empty-msg">Could not load transactions. <a href="#" class="nav-link load-retry">Retry</a></div>`);
+    const reason = e instanceof LoadFailedError
+      ? `The load failed${e.message ? `: ${escapeHtml(e.message)}` : ""}.`
+      : "Could not load transactions.";
+    showLedgerMessage(`<div class="empty-msg">${reason} <a href="#" class="nav-link load-retry">Retry</a></div>`);
     document.querySelector(".load-retry").addEventListener("click", (ev) => {
       ev.preventDefault();
       load();
@@ -435,11 +427,12 @@ async function fullReloadTransactionsAndRender() {
         clearForFullReload();
       },
       // clearForFullReload emptied `provisional`, so the reload's pages render
-      // into the same provisional table an ordinary load streams into -- same
-      // caveat as there: running balance and the zero point aren't knowable
-      // until the whole history is in, so load() below does the authoritative
-      // render once the drain has landed.
-      onPage: (rows, totalCount) => {
+      // into the same provisional table an ordinary load fills -- same caveat
+      // as there: running balance and the zero point aren't knowable until the
+      // whole history is in, so load() below does the authoritative render
+      // once the drain has landed.
+      onPage: (rows, totalCount, { replace } = {}) => {
+        if (replace) provisional = [];
         provisional.push(...rows.map((r) => ({ ...r, running_balance: null, is_zero_point: false })));
         provisional.sort(byDateDesc);
         renderProvisional(totalCount);

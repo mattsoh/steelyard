@@ -16,6 +16,14 @@ class Api::TransactionsControllerTest < ActionController::TestCase
     Rails.cache = @previous_cache
   end
 
+  # Drains the organization the way the background task would have by the time
+  # the authoritative endpoints are asked for it. #index no longer walks HCB
+  # inside the request -- a cold organization is answered with the task
+  # building it -- so tests of what #index *renders* start warm.
+  def warm!(fake_client)
+    Hcb::OrganizationTransactions.new(fake_client, "org_1").all
+  end
+
   test "returns windowed transactions plus any older ones referenced by an active match" do
     windowed = { "id" => "txn_recent", "date" => "2026-06-01", "memo" => "Recent donation", "amount_cents" => 5_000 }
     aged_out = { "id" => "txn_old", "date" => "2020-01-01", "memo" => "Old grant", "amount_cents" => -5_000 }
@@ -24,6 +32,7 @@ class Api::TransactionsControllerTest < ActionController::TestCase
 
     match = Match.create!(hcb_organization_id: "org_1", discrepancy_cents: 0, created_by: @user)
     match.match_transactions.create!(hcb_organization_id: "org_1", hcb_transaction_id: "txn_old", direction: :outgoing)
+    warm!(fake_client)
 
     Hcb::Client.stub :new, fake_client do
       stub_membership("reader") do
@@ -41,6 +50,7 @@ class Api::TransactionsControllerTest < ActionController::TestCase
     fake_client = FakeHcbClient.new(transactions: [
       { "id" => "txn_1", "date" => "2026-01-01", "memo" => "Donation", "amount_cents" => 5_000 }
     ])
+    warm!(fake_client)
 
     Hcb::Client.stub :new, fake_client do
       stub_membership("reader") do
@@ -55,127 +65,119 @@ class Api::TransactionsControllerTest < ActionController::TestCase
     assert_equal true, beginning["beginning"]
   end
 
-  test "page returns presented transactions for a stream_id, with no more pages left" do
+  test "page answers a warm organization with every row, pre-serialized, and the drain token" do
     fake_client = FakeHcbClient.new(transactions: [
       { "id" => "txn_2", "date" => "2026-01-02", "memo" => "Grant", "amount_cents" => -5_000 },
       { "id" => "txn_1", "date" => "2026-01-01", "memo" => "Donation", "amount_cents" => 5_000 }
     ])
+    Hcb::OrganizationTransactions.new(fake_client, "org_1").all
+    calls_before = fake_client.transactions_calls
 
     Hcb::Client.stub :new, fake_client do
       stub_membership("reader") do
-        get :page, params: { organization_id: "org_1", stream_id: "s1" }
+        assert_no_enqueued_jobs do
+          get :page, params: { organization_id: "org_1" }
+        end
       end
     end
 
     assert_response :success
     body = JSON.parse(response.body)
+    assert body["warm"]
     assert_equal [ "txn_2", "txn_1" ], body["rows"].map { |t| t["id"] }
-    assert_not body["has_more"]
-    assert_nil body["next_after"]
+    assert_equal "Grant", body["rows"].first["memo"]
+    assert body["token"].present?
+    assert_equal "done", body.dig("progress", "phase")
+    assert_equal calls_before, fake_client.transactions_calls
   end
 
-  test "a cold multi-page walk queues the job that will finish it if this tab goes away" do
+  test "page on a cold organization starts one background task and answers with it, not with a walk" do
     transactions = (1..250).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
     fake_client = FakeHcbClient.new(transactions: transactions)
 
     Hcb::Client.stub :new, fake_client do
       stub_membership("reader") do
         assert_enqueued_with(job: WarmOrganizationTransactionsJob) do
-          get :page, params: { organization_id: "org_1", stream_id: "s1" }
+          get :page, params: { organization_id: "org_1" }
         end
       end
     end
 
     assert_response :success
-    assert JSON.parse(response.body)["has_more"]
-  end
-
-  test "a walk that finishes in one page queues nothing to stand behind it" do
-    fake_client = FakeHcbClient.new(transactions: [ { "id" => "txn_1", "date" => "2026-01-01", "amount_cents" => 1 } ])
-
-    Hcb::Client.stub :new, fake_client do
-      stub_membership("reader") do
-        assert_no_enqueued_jobs do
-          get :page, params: { organization_id: "org_1", stream_id: "s1" }
-        end
-      end
-    end
-
-    assert_response :success
-  end
-
-  test "the page that finishes a walk names the drain, so a browser can cache against it" do
-    fake_client = FakeHcbClient.new(transactions: [ { "id" => "txn_1", "date" => "2026-01-01", "amount_cents" => 1 } ])
-
-    Hcb::Client.stub :new, fake_client do
-      stub_membership("reader") do
-        get :page, params: { organization_id: "org_1", stream_id: "s1" }
-      end
-    end
-
     body = JSON.parse(response.body)
-    assert_not body["has_more"]
-    assert body["token"].present?
+    assert_not body["warm"]
+    assert_empty body["rows"]
+    assert_equal 0, body["pages_done"]
+    assert_equal "starting", body.dig("progress", "phase")
+    assert_equal "cold", body.dig("progress", "kind")
+    assert body.dig("progress", "task_id").present?
+    assert_equal 0, fake_client.transactions_calls, "the request itself must not walk HCB"
+    assert_match(/started loading/, body["log"].first["text"])
   end
 
-  test "a page answered entirely from cache says so, so the caller stops streaming" do
-    fake_client = FakeHcbClient.new(transactions: [ { "id" => "txn_1", "date" => "2026-01-01", "amount_cents" => 1 } ])
-    Hcb::OrganizationTransactions.new(fake_client, "org_1").all
-
-    Hcb::Client.stub :new, fake_client do
-      stub_membership("reader") do
-        get :page, params: { organization_id: "org_1", stream_id: "s2" }
-      end
-    end
-
-    body = JSON.parse(response.body)
-    assert body["warm"]
-    assert_not body["has_more"]
-  end
-
-  test "handoff takes a stream over straight away rather than waiting out its heartbeat" do
-    transactions = (1..250).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
+  test "page hands a viewer that joins mid-walk every page fetched so far, then only what is new" do
+    transactions = (1..500).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
     fake_client = FakeHcbClient.new(transactions: transactions)
     service = Hcb::OrganizationTransactions.new(fake_client, "org_1")
 
-    Hcb::Client.stub :new, fake_client do
-      stub_membership("reader") do
-        get :page, params: { organization_id: "org_1", stream_id: "s1" }
-
-        assert_enqueued_with(job: WarmOrganizationTransactionsJob) do
-          post :handoff, params: { organization_id: "org_1", stream_id: "s1" }
-        end
-      end
+    # A task somebody else started is three pages in.
+    service.start_task!(kind: :cold, requested_by: "someone else")
+    3.times do |i|
+      Rails.cache.write(service.send(:page_key, i + 1), transactions[i * 100, 100], expires_in: 1.minute)
     end
-
-    assert_response :accepted
-    # The claim is left in place but backdated, so the job standing behind the
-    # stream may take it over immediately instead of waiting ninety seconds to
-    # infer what the browser has just told it outright.
-    assert_equal :resumed, service.resume_stream!("s1")
-  end
-
-  test "handoff is a no-op for a stream that no longer owns the walk" do
-    fake_client = FakeHcbClient.new(transactions: [ { "id" => "txn_1", "date" => "2026-01-01", "amount_cents" => 1 } ])
+    service.progress.advance!(pages_done: 3, transactions_done: 300, total_count: 500)
+    calls_before = fake_client.transactions_calls
 
     Hcb::Client.stub :new, fake_client do
       stub_membership("reader") do
         assert_no_enqueued_jobs do
-          post :handoff, params: { organization_id: "org_1", stream_id: "never-existed" }
+          get :page, params: { organization_id: "org_1" }
         end
+        first = JSON.parse(response.body)
+        assert_equal 300, first["rows"].size, "a late joiner is handed everything fetched so far"
+        assert_equal transactions.first(300).map { |t| t["id"] }, first["rows"].map { |t| t["id"] }
+        assert_equal 3, first["pages_done"]
+        assert_equal "someone else", first.dig("progress", "requested_by")
+
+        # The task fetches one more page; the viewer asks for what's after the three it has.
+        Rails.cache.write(service.send(:page_key, 4), transactions[300, 100], expires_in: 1.minute)
+        service.progress.advance!(pages_done: 4, transactions_done: 400, total_count: 500)
+
+        get :page, params: { organization_id: "org_1", after_page: first["pages_done"] }
+        more = JSON.parse(response.body)
+        assert_equal 100, more["rows"].size
+        assert_equal "txn_200", more["rows"].first["id"]
+        assert_equal 4, more["pages_done"]
       end
     end
 
-    assert_response :accepted
+    assert_equal calls_before, fake_client.transactions_calls, "watching a task must never cost an HCB request"
   end
 
-  test "sync_status reports a walk in flight so a second tab can watch it instead of starting one" do
+  test "page only sends the activity-log lines after the seq the viewer has" do
+    fake_client = FakeHcbClient.new(transactions: [ { "id" => "txn_1", "date" => "2026-01-01", "amount_cents" => 1 } ])
+    service = Hcb::OrganizationTransactions.new(fake_client, "org_1")
+    service.activity.append("first")
+    service.activity.append("second")
+
+    Hcb::Client.stub :new, fake_client do
+      stub_membership("reader") do
+        get :page, params: { organization_id: "org_1", log_after: 1 }
+      end
+    end
+
+    texts = JSON.parse(response.body)["log"].map { |e| e["text"] }
+    assert_not_includes texts, "first"
+    assert_includes texts, "second"
+  end
+
+  test "sync_status reports a task in flight, with its log, so a second tab can watch it instead of starting one" do
     transactions = (1..250).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
     fake_client = FakeHcbClient.new(transactions: transactions)
 
     Hcb::Client.stub :new, fake_client do
       stub_membership("reader") do
-        get :page, params: { organization_id: "org_1", stream_id: "s1" }
+        get :page, params: { organization_id: "org_1" }
         calls_before = fake_client.transactions_calls
         get :sync_status, params: { organization_id: "org_1" }
 
@@ -187,54 +189,52 @@ class Api::TransactionsControllerTest < ActionController::TestCase
     assert body["draining"]
     assert_equal "cold", body["drain_kind"]
     assert_equal "cold", body.dig("progress", "kind")
-    assert_equal 100, body.dig("progress", "transactions_done")
-    assert_equal 250, body.dig("progress", "total_count")
+    assert_equal "background", body.dig("progress", "source")
+    assert_equal 250, body.dig("progress", "total_count").to_i if body.dig("progress", "total_count")
+    assert_equal 1, body["log"].size
   end
 
-  test "closing an organization part-way through its first load and reopening it walks the rest, not the lot" do
-    transactions = (1..500).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
-    fake_client = FakeHcbClient.new(transactions: transactions)
+  test "a failed load is reported as such and not restarted by the next poll" do
+    fake_client = FakeHcbClient.new(transactions: [ { "id" => "txn_1", "date" => "2026-01-01", "amount_cents" => 1 } ])
+    service = Hcb::OrganizationTransactions.new(fake_client, "org_1")
+    task_id = service.start_task!(kind: :cold, requested_by: "a")
+    service.progress.fail!("HCB is down")
+    service.release_task!
 
     Hcb::Client.stub :new, fake_client do
       stub_membership("reader") do
-        # A tab opens the organization and gets two pages in.
-        get :page, params: { organization_id: "org_1", stream_id: "tab-a" }
-        first = JSON.parse(response.body)
-        get :page, params: { organization_id: "org_1", stream_id: "tab-a", after: first["next_after"] }
+        assert_no_enqueued_jobs do
+          get :page, params: { organization_id: "org_1" }
+        end
+        body = JSON.parse(response.body)
+        assert_equal "failed", body.dig("progress", "phase")
+        assert_equal task_id, body.dig("progress", "task_id")
 
-        # The tab closes; the beacon hands the walk off.
-        post :handoff, params: { organization_id: "org_1", stream_id: "tab-a" }
-        spent_before_reopen = fake_client.transactions_calls
-
-        # The organization is opened again in a new tab.
-        get :page, params: { organization_id: "org_1", stream_id: "tab-b" }
-        resumed = JSON.parse(response.body)
-
-        assert_equal 300, resumed["rows"].size,
-          "the reopened tab should be handed everything the closed one had already fetched"
-        assert_equal 1, fake_client.transactions_calls - spent_before_reopen,
-          "reopening should cost one more page, not another walk of the whole history"
+        # The explicit retry starts a fresh task.
+        assert_enqueued_with(job: WarmOrganizationTransactionsJob) do
+          get :page, params: { organization_id: "org_1", retry: "1" }
+        end
+        assert_equal "starting", JSON.parse(response.body).dig("progress", "phase")
       end
     end
   end
 
-  test "the authoritative view says it is still loading rather than reporting an empty organization" do
+  test "the authoritative view starts the task and says it is loading rather than reporting an empty organization" do
     transactions = (1..500).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
     fake_client = FakeHcbClient.new(transactions: transactions)
 
     Hcb::Client.stub :new, fake_client do
       stub_membership("reader") do
-        get :page, params: { organization_id: "org_1", stream_id: "tab-a" }
-        spent = fake_client.transactions_calls
-
-        get :index, params: { organization_id: "org_1" }
+        assert_enqueued_with(job: WarmOrganizationTransactionsJob) do
+          get :index, params: { organization_id: "org_1" }
+        end
         body = JSON.parse(response.body)
 
         assert_empty body["transactions"]
         assert body["draining"], "an empty result mid-walk must be distinguishable from an empty organization"
         assert_not body["reloading"], "a first load is not a reload"
-        assert_equal spent, fake_client.transactions_calls,
-          "the authoritative read must not walk the history beside the stream already doing it"
+        assert_equal 0, fake_client.transactions_calls,
+          "the authoritative read must not walk the history inside the request"
       end
     end
   end
@@ -286,14 +286,34 @@ class Api::TransactionsControllerTest < ActionController::TestCase
 
     Hcb::Client.stub :new, fake_client do
       stub_membership("reader") do
-        assert_enqueued_with(job: WarmOrganizationTransactionsJob, args: [ @user.id, "org_1" ]) do
+        assert_enqueued_with(job: WarmOrganizationTransactionsJob) do
           post :refresh, params: { organization_id: "org_1" }
         end
       end
     end
 
     assert_response :success
-    assert_equal "deep", JSON.parse(response.body)["status"]
+    body = JSON.parse(response.body)
+    assert_equal "deep", body["status"]
+    assert body["draining"], "the redrain is a task every viewer can now watch"
+    assert_equal "cold", body.dig("progress", "kind")
+  end
+
+  test "refresh records what it found in the log everyone reads" do
+    fake_client = FakeHcbClient.new(transactions: [
+      { "id" => "txn_1", "date" => "2026-01-01", "memo" => "Donation", "amount_cents" => 5_000 }
+    ])
+    Hcb::OrganizationTransactions.new(fake_client, "org_1").all
+    @user.update!(name: "Matthew")
+
+    Hcb::Client.stub :new, fake_client do
+      stub_membership("reader") do
+        post :refresh, params: { organization_id: "org_1" }
+      end
+    end
+
+    log = JSON.parse(response.body)["log"]
+    assert_match(/Matthew checked HCB.*up to date/, log.last["text"])
   end
 
   test "sync_status reports the current drain stamp without touching HCB" do
@@ -316,7 +336,7 @@ class Api::TransactionsControllerTest < ActionController::TestCase
     assert_equal calls_before, fake_client.transactions_calls
   end
 
-  test "reload hands the winning tab a stream to drive, and queues the job behind it" do
+  test "reload starts one background task and queues the job that runs it" do
     fake_client = FakeHcbClient.new(transactions: [ { "id" => "txn_1", "date" => "2026-01-01", "amount_cents" => 1 } ])
 
     Hcb::Client.stub :new, fake_client do
@@ -330,66 +350,61 @@ class Api::TransactionsControllerTest < ActionController::TestCase
     assert_response :success
     body = JSON.parse(response.body)
     assert_equal "started", body["status"]
-    # The stream_id is what lets the tab ask for reload-mode pages and render
-    # the walk as it arrives instead of polling a cleared page.
-    assert body["stream_id"].present?
+    assert body["task_id"].present?
+    assert body["reloading"]
+    assert_equal "reload", body.dig("progress", "kind")
+    assert_equal 0, fake_client.transactions_calls, "the walk is the job's, not the request's"
   end
 
-  test "a second tab asking for a reload gets no stream and waits for the one already running" do
+  test "a second tab asking for a reload is told one is already running, and watches that one" do
     fake_client = FakeHcbClient.new(transactions: [ { "id" => "txn_1", "date" => "2026-01-01", "amount_cents" => 1 } ])
 
     Hcb::Client.stub :new, fake_client do
       stub_membership("reader") do
         post :reload, params: { organization_id: "org_1" }
-        post :reload, params: { organization_id: "org_1" }
+        first = JSON.parse(response.body)
+        assert_no_enqueued_jobs(only: WarmOrganizationTransactionsJob) do
+          post :reload, params: { organization_id: "org_1" }
+        end
+        body = JSON.parse(response.body)
+        assert_equal "already_running", body["status"]
+        assert_nil body["task_id"]
+        assert_equal first["task_id"], body.dig("progress", "task_id")
       end
     end
-
-    body = JSON.parse(response.body)
-    assert_equal "already_running", body["status"]
-    assert_nil body["stream_id"]
   end
 
-  test "a reload-mode page from a stream that doesn't hold the claim is refused" do
-    fake_client = FakeHcbClient.new(transactions: [ { "id" => "txn_1", "date" => "2026-01-01", "amount_cents" => 1 } ])
-
-    Hcb::Client.stub :new, fake_client do
-      stub_membership("reader") do
-        post :reload, params: { organization_id: "org_1" }
-        # Without this check, a full re-walk of the org's entire history would
-        # be something any caller could ask for at will.
-        get :page, params: { organization_id: "org_1", stream_id: "not-the-winner", reload: "1" }
-      end
-    end
-
-    assert_response :conflict
-  end
-
-  test "the tab holding the claim streams reload-mode pages" do
+  test "every viewer sees a reload's pages as they land, not just the tab that asked" do
     transactions = (1..3).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
     fake_client = FakeHcbClient.new(transactions: transactions)
+    service = Hcb::OrganizationTransactions.new(fake_client, "org_1")
 
     Hcb::Client.stub :new, fake_client do
       stub_membership("reader") do
         post :reload, params: { organization_id: "org_1" }
-        stream_id = JSON.parse(response.body)["stream_id"]
-        get :page, params: { organization_id: "org_1", stream_id: stream_id, reload: "1", limit: 1 }
+
+        # The job has fetched the first page of the reload.
+        Rails.cache.write(service.send(:page_key, 1), transactions[0, 2], expires_in: 1.minute)
+        service.progress.advance!(pages_done: 1, transactions_done: 2, total_count: 3)
+
+        get :page, params: { organization_id: "org_1" }
       end
     end
 
-    assert_response :success
     body = JSON.parse(response.body)
-    assert_equal 3, body["rows"].size
-    assert_not body["has_more"]
+    assert_not body["warm"]
+    assert_equal %w[txn_3 txn_2], body["rows"].map { |t| t["id"] }
+    assert_equal "reload", body.dig("progress", "kind")
   end
 
   test "reload clears the organization's caches before the walk starts, not after it finishes" do
     transactions = (1..3).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
     fake_client = FakeHcbClient.new(transactions: transactions)
 
+    warm!(fake_client)
+
     Hcb::Client.stub :new, fake_client do
       stub_membership("reader") do
-        get :index, params: { organization_id: "org_1" } # warms everything
         post :reload, params: { organization_id: "org_1" }
       end
     end
@@ -401,6 +416,9 @@ class Api::TransactionsControllerTest < ActionController::TestCase
     assert_nil service.find("txn_1")
     assert_nil service.presented
     assert service.sync_state[:reloading]
+    # But the task's own record survives the purge: it is what every viewer is
+    # about to watch.
+    assert_equal "reload", service.progress.read[:kind]
   end
 
   test "index says it is reloading rather than reporting an organization with no transactions" do
@@ -436,22 +454,24 @@ class Api::TransactionsControllerTest < ActionController::TestCase
     assert_equal "reloading", JSON.parse(response.body)["status"]
   end
 
-  test "an ordinary stream is told to wait instead of walking the history alongside the reload" do
+  test "an ordinary load during a reload attaches to the reload instead of walking the history alongside it" do
     transactions = (1..3).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
     fake_client = FakeHcbClient.new(transactions: transactions)
 
     Hcb::Client.stub :new, fake_client do
       stub_membership("reader") do
         post :reload, params: { organization_id: "org_1" }
+        task_id = JSON.parse(response.body)["task_id"]
         calls_before = fake_client.transactions_calls
-        get :page, params: { organization_id: "org_1", stream_id: "bystander" }
+        assert_no_enqueued_jobs(only: WarmOrganizationTransactionsJob) do
+          get :page, params: { organization_id: "org_1" }
+        end
         assert_equal calls_before, fake_client.transactions_calls
+        body = JSON.parse(response.body)
+        assert_not body["warm"]
+        assert_equal task_id, body.dig("progress", "task_id")
       end
     end
-
-    body = JSON.parse(response.body)
-    assert body["reloading"]
-    assert_empty body["rows"]
   end
 
   test "a full reload rebuilds the history and the matches are re-derived against what came back" do
@@ -462,22 +482,21 @@ class Api::TransactionsControllerTest < ActionController::TestCase
     match = Match.create!(hcb_organization_id: "org_1", discrepancy_cents: 0, created_by: @user)
     match.match_transactions.create!(hcb_organization_id: "org_1", hcb_transaction_id: "txn_in", direction: :incoming)
     match.match_transactions.create!(hcb_organization_id: "org_1", hcb_transaction_id: "txn_out", direction: :outgoing)
+    warm!(fake_client)
 
     Hcb::Client.stub :new, fake_client do
       stub_membership("reader") do
-        get :index, params: { organization_id: "org_1" }
-
         # Between the two loads HCB re-groups one leg away and restates the
         # other -- exactly what a full reload exists to discover.
         fake_client.remove_transaction("txn_out")
         fake_client.update_transaction("txn_in", "amount_cents" => 12_500)
 
         post :reload, params: { organization_id: "org_1" }
-        stream_id = JSON.parse(response.body)["stream_id"]
+        task_id = JSON.parse(response.body)["task_id"]
         # The purge means nothing of the previous drain is left to resync
         # against, which is why the matches are only re-derived once the fresh
-        # walk has landed -- not during it.
-        get :page, params: { organization_id: "org_1", stream_id: stream_id, reload: "1" }
+        # walk has landed -- not during it. The job runs the task.
+        Hcb::OrganizationTransactions.new(fake_client, "org_1").run_task!(task_id)
       end
     end
 
@@ -498,19 +517,20 @@ class Api::TransactionsControllerTest < ActionController::TestCase
     assert_equal 12_500, match.discrepancy_cents
   end
 
-  test "a streamed page reports how much of it went to HCB" do
+  test "a page reports how much of it went to HCB" do
     fake_client = FakeHcbClient.new(transactions: [ { "id" => "txn_1", "date" => "2026-01-01", "amount_cents" => 1 } ])
 
     Hcb::Client.stub :new, fake_client do
       stub_membership("reader") do
-        get :page, params: { organization_id: "org_1", stream_id: "s1" }
+        get :page, params: { organization_id: "org_1" }
       end
     end
 
     # The activity log reads this to say whether a slow load is us or HCB, which
-    # is guesswork from the outside otherwise.
+    # is guesswork from the outside otherwise. A page never walks HCB itself
+    # now, so the honest answer is zero.
     hcb = JSON.parse(response.body)["hcb"]
-    assert_equal 1, hcb["requests"]
+    assert_equal 0, hcb["requests"]
     assert hcb.key?("ms")
     assert hcb.key?("slowest_ms")
   end
@@ -521,6 +541,7 @@ class Api::TransactionsControllerTest < ActionController::TestCase
       { "id" => "txn_pending_out", "date" => "2026-02-01", "amount_cents" => -2_500, "pending" => true },
       { "id" => "txn_settled_in", "date" => "2026-01-01", "amount_cents" => 10_000 }
     ])
+    warm!(fake_client)
 
     Hcb::Client.stub :new, fake_client do
       stub_membership("reader") { get :index, params: { organization_id: "org_1" } }
@@ -541,9 +562,10 @@ class Api::TransactionsControllerTest < ActionController::TestCase
       { "id" => "txn_settled_in", "date" => "2026-01-01", "amount_cents" => 10_000 }
     ])
 
+    warm!(fake_client)
+
     Hcb::Client.stub :new, fake_client do
       stub_membership("reader") do
-        get :index, params: { organization_id: "org_1" } # warms the side caches
         get :index, params: { organization_id: "org_1" }
       end
     end

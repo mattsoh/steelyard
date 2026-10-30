@@ -1,17 +1,19 @@
-// A running account of what the page is doing with HCB, in a panel you can
-// open when you want it and ignore when you don't.
+// A running account of what is happening to this organization's HCB data, in a
+// panel you can open when you want it and ignore when you don't.
 //
-// The matcher and the ledger both spend real time waiting on HCB -- a cold load
-// is a round trip per hundred transactions, a full reload re-walks the whole
-// history -- and until now all of that was one line of text ("loading…") and a
-// spinner. When it took two minutes there was no way to tell a slow drain from
-// a stuck one, or Steelyard being slow from HCB being slow. This says which.
+// Two sources feed it. The server's activity log (Hcb::ActivityLog) is written
+// by the background task that loads the organization -- and by the checks
+// around it -- and is the same for every tab: open a second tab, or come back
+// to an organization an hour later, and the panel shows the same pages, the
+// same timings, the same "started by" lines that anyone else watching saw.
+// This tab's own lines (what it asked for, what it rendered) are layered in
+// alongside, marked so the two can be told apart.
 //
 // Loaded before the page scripts, so they can log from the top of a load.
 
 // Enough to explain a load, not enough to become a memory leak on a page left
 // open all day. Oldest lines drop off the top.
-const ACTIVITY_MAX_ENTRIES = 200;
+const ACTIVITY_MAX_ENTRIES = 400;
 
 // Above this, a single HCB call is worth remarking on rather than just
 // recording. Ordinary pages come back in a few hundred milliseconds; this is
@@ -24,25 +26,53 @@ let activityPanelOpen = false;
 // something new without the panel having to be open to count it.
 let activityUnseen = 0;
 let activitySlowNoted = false;
+// The newest server-log seq this tab has rendered. Sent back with every poll
+// (see withLogCursor in streaming.js) so the server only has to return what
+// is new, and used here to drop anything that arrives twice.
+let serverActivitySeq = 0;
 
-const activityStartedAt = Date.now();
-
-function activityElapsed() {
-  const seconds = (Date.now() - activityStartedAt) / 1000;
-  if (seconds < 60) return `${seconds.toFixed(1)}s`;
-  const minutes = Math.floor(seconds / 60);
-  return `${minutes}m${String(Math.floor(seconds % 60)).padStart(2, "0")}s`;
+// Wall-clock time, not elapsed-since-load: the server's lines were written by
+// a task that may have started before this tab existed, and "14:02:11" reads
+// the same in every tab where "+3.2s" would not.
+function activityTime(atMs) {
+  const d = new Date(atMs);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
-// kind drives only the colour of the line: "info" (default), "hcb" for
-// something HCB did, "warn" for something worth noticing, "error" for something
-// that failed, "done" for something finishing.
-function logActivity(text, kind = "info") {
-  activityEntries.push({ at: activityElapsed(), text, kind });
+function pushActivity(entry) {
+  activityEntries.push(entry);
+  // Server lines can arrive out of step with this tab's own (a poll brings the
+  // last few seconds of a task's log in one go), so the panel is kept in time
+  // order rather than arrival order.
+  activityEntries.sort((a, b) => a.at - b.at);
   while (activityEntries.length > ACTIVITY_MAX_ENTRIES) activityEntries.shift();
-
   if (!activityPanelOpen) activityUnseen += 1;
+}
+
+// This tab's own line. kind drives only the colour: "info" (default), "hcb"
+// for something HCB did, "warn" for something worth noticing, "error" for
+// something that failed, "done" for something finishing.
+function logActivity(text, kind = "info") {
+  pushActivity({ at: Date.now(), text, kind, source: "tab" });
   renderActivity();
+}
+
+// Lines from the server's log, as Hcb::ActivityLog#read returns them:
+// { seq, at (epoch seconds), kind, text }. Anything already shown is skipped.
+function logServerActivity(entries) {
+  let added = false;
+  for (const e of entries) {
+    if (!e || typeof e.seq !== "number" || e.seq <= serverActivitySeq) continue;
+    serverActivitySeq = e.seq;
+    pushActivity({ at: Math.round(e.at * 1000), text: e.text, kind: e.kind || "info", source: "server" });
+    added = true;
+  }
+  if (added) renderActivity();
+}
+
+function lastServerActivitySeq() {
+  return serverActivitySeq;
 }
 
 // The HCB half of a response (see StreamedTransactionPages), rendered as a
@@ -99,8 +129,11 @@ function renderActivity() {
 
   body.innerHTML = activityEntries.length
     ? activityEntries
-      .map((e) => `<li class="activity-line activity-${escapeHtml(e.kind)}">`
-        + `<span class="activity-at">${escapeHtml(e.at)}</span>${escapeHtml(e.text)}</li>`)
+      .map((e) => `<li class="activity-line activity-${escapeHtml(e.kind)} activity-from-${escapeHtml(e.source)}"`
+        + ` title="${e.source === "server" ? "Recorded by the server — the same for everyone viewing this organization" : "This tab"}">`
+        + `<span class="activity-at">${escapeHtml(activityTime(e.at))}</span>`
+        + `<span class="activity-source" aria-hidden="true">${e.source === "server" ? "⚙" : "·"}</span>`
+        + `${escapeHtml(e.text)}</li>`)
       .join("")
     : `<li class="activity-line activity-info">Nothing yet.</li>`;
 
@@ -128,7 +161,9 @@ function initActivityPanel() {
   const copy = document.getElementById("activity-copy");
   if (copy) {
     copy.addEventListener("click", async () => {
-      const text = activityEntries.map((e) => `${e.at}  ${e.text}`).join("\n");
+      const text = activityEntries
+        .map((e) => `${activityTime(e.at)}  ${e.source === "server" ? "[server] " : "[tab]    "}${e.text}`)
+        .join("\n");
       try {
         await navigator.clipboard.writeText(text);
         copy.textContent = "Copied";

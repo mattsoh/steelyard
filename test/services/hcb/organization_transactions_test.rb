@@ -49,50 +49,69 @@ class Hcb::OrganizationTransactionsTest < ActiveSupport::TestCase
     assert_equal 1, client.transactions_calls
   end
 
-  test "fetch_page drains one page at a time and primes the cache #all reads from" do
-    client = FakeHcbClient.new(
-      transactions: [
-        { "id" => "txn_3", "date" => "2026-01-03", "memo" => "C", "amount_cents" => 300 },
-        { "id" => "txn_2", "date" => "2026-01-02", "memo" => "B", "amount_cents" => 200 },
-        { "id" => "txn_1", "date" => "2026-01-01", "memo" => "A", "amount_cents" => 100 }
-      ]
-    )
+  test "a cold task walks the history page by page, keeping each page where a viewer can read it" do
+    transactions = (1..5).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
+    client = FakeHcbClient.new(transactions: transactions)
     service = Hcb::OrganizationTransactions.new(client, "org_1")
 
-    first = service.fetch_page(stream_id: "s1", limit: 1)
-    assert_equal [ "txn_3" ], first[:data].map { |t| t["id"] }
-    assert first[:has_more]
-    assert_equal "txn_3", first[:next_after]
+    task_id = service.start_task!(kind: :cold, requested_by: "Matthew")
+    assert task_id.present?
+    assert service.drain_running?
+    assert_equal "starting", service.progress.read[:phase]
 
-    second = service.fetch_page(stream_id: "s1", after: first[:next_after], limit: 1)
-    assert_equal [ "txn_2" ], second[:data].map { |t| t["id"] }
-    assert second[:has_more]
+    # Mid-walk, the pages fetched so far are readable by anyone -- a tab that
+    # joins late gets everything up to now in one go, then asks for what's new.
+    seen = []
+    service.stub(:page, ->(after: nil, limit:) {
+      result = client.transactions("org_1", after: after, limit: 2)
+      seen << service.task_pages(0).size
+      result
+    }) do
+      result = service.run_task!(task_id)
+      assert_equal transactions.map { |t| t["id"] }, result.map { |t| t["id"] }
+    end
+    # Before pages 1, 2 and 3 were fetched the buffer held 0, 2 and 4 rows.
+    assert_equal [ 0, 2, 4 ], seen
 
-    third = service.fetch_page(stream_id: "s1", after: second[:next_after], limit: 1)
-    assert_equal [ "txn_1" ], third[:data].map { |t| t["id"] }
-    assert_not third[:has_more]
-    assert_nil third[:next_after]
-
-    # The buffered pages should now be cached under the same key #all uses --
-    # a follow-up #all shouldn't hit HCB again.
-    calls_before = client.transactions_calls
-    assert_equal [ "txn_3", "txn_2", "txn_1" ], service.all.map { |t| t["id"] }
-    assert_equal calls_before, client.transactions_calls
+    # Published to the same cache #all reads from, the claim released, and the
+    # per-page buffer gone with it.
+    assert_equal transactions.map { |t| t["id"] }, service.all.map { |t| t["id"] }
+    assert_nil service.task_claim
+    assert_not service.drain_running?
+    assert_equal "done", service.progress.read[:phase]
+    assert_empty service.task_pages(0)
   end
 
-  test "fetch_page short-circuits to the warm cache instead of re-draining" do
-    client = FakeHcbClient.new(
-      transactions: [ { "id" => "txn_1", "date" => "2026-01-01", "memo" => "A", "amount_cents" => 100 } ]
-    )
+  test "task_pages answers from the page a viewer already has onwards" do
+    transactions = (1..5).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
+    client = FakeHcbClient.new(transactions: transactions)
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+    task_id = service.start_task!(kind: :cold, requested_by: "Matthew")
+
+    # The task has fetched two pages of two.
+    Rails.cache.write(service.send(:page_key, 1), transactions[0, 2], expires_in: Hcb::OrganizationTransactions::TASK_PAGE_TTL)
+    Rails.cache.write(service.send(:page_key, 2), transactions[2, 2], expires_in: Hcb::OrganizationTransactions::TASK_PAGE_TTL)
+    service.progress.advance!(pages_done: 2, transactions_done: 4, total_count: 5)
+
+    assert_equal %w[txn_5 txn_4 txn_3 txn_2], service.task_pages(0).map { |t| t["id"] }
+    assert_equal %w[txn_3 txn_2], service.task_pages(1).map { |t| t["id"] }
+    assert_empty service.task_pages(2)
+  end
+
+  test "an incremental task keeps no pages: its result is a splice that only exists once it has finished" do
+    transactions = (1..5).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
+    client = FakeHcbClient.new(transactions: transactions)
     service = Hcb::OrganizationTransactions.new(client, "org_1")
     service.all
 
-    calls_before = client.transactions_calls
-    result = service.fetch_page(stream_id: "s2")
+    client.add_transactions([ { "id" => "txn_6", "date" => "2026-01-02", "amount_cents" => 6 } ])
+    task_id = service.start_task!(kind: :incremental, requested_by: "Matthew")
+    assert_empty service.task_pages(0)
+    assert_equal :incremental, service.task_claim[:kind]
 
-    assert_equal [ "txn_1" ], result[:data].map { |t| t["id"] }
-    assert_not result[:has_more]
-    assert_equal calls_before, client.transactions_calls
+    result = service.run_task!(task_id)
+    assert_equal "txn_6", result.first["id"]
+    assert_equal 6, service.all.size
   end
 
   test "all enqueues a background refresh once the cached entry is due for a check" do
@@ -297,9 +316,9 @@ class Hcb::OrganizationTransactionsTest < ActiveSupport::TestCase
     assert_equal 3, client.transactions_calls # ceil(250 / 100)
   end
 
-  test "fetch_page reuses the baseline for an incremental rejoin once the primary cache has expired" do
+  test "a load after the primary cache has expired is an incremental task, not a full re-walk" do
     old_transactions = (1..500).map { |n| { "id" => "txn_old_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
-    client = FakeHcbClient.new(transactions: old_transactions)
+    client = FakeHcbClient.new(transactions: old_transactions, user_id: 7)
     service = Hcb::OrganizationTransactions.new(client, "org_1")
 
     service.all
@@ -308,13 +327,19 @@ class Hcb::OrganizationTransactionsTest < ActiveSupport::TestCase
     client.add_transactions(new_transactions)
 
     travel(Hcb::OrganizationTransactions::TTL + 1.second) do
+      task = nil
+      assert_enqueued_with(job: WarmOrganizationTransactionsJob) do
+        task = service.ensure_loaded!(requested_by: "Matthew", user_id: 7)
+      end
+      assert_equal "incremental", task[:kind]
+      assert_equal 500, task[:total_count], "the baseline's size is the denominator a viewer sees"
+
       calls_before = client.transactions_calls
-      result = service.fetch_page(stream_id: "s3")
+      result = service.run_task!(task[:task_id])
       calls_during = client.transactions_calls - calls_before
 
-      assert_equal 501, result[:data].size
-      assert_equal "txn_new_1", result[:data].first["id"]
-      assert_not result[:has_more]
+      assert_equal 501, result.size
+      assert_equal "txn_new_1", result.first["id"]
       assert_operator calls_during, :<, 6 # a full 501-item drain would take 6 requests
     end
   end
@@ -389,12 +414,12 @@ class Hcb::OrganizationTransactionsTest < ActiveSupport::TestCase
     client = FakeHcbClient.new(transactions: [ { "id" => "txn_1", "date" => "2026-01-01", "amount_cents" => 100 } ])
     service = Hcb::OrganizationTransactions.new(client, "org_1")
     service.all
-    stamp_before = service.sync_state.except(:progress)
+    stamp_before = service.sync_state.except(:progress, :log)
 
     travel(1.minute) do
       assert_equal :fresh, Hcb::OrganizationTransactions.new(client, "org_1").sync_head!
       after = Hcb::OrganizationTransactions.new(client, "org_1").sync_state
-      assert_equal stamp_before, after.except(:progress)
+      assert_equal stamp_before, after.except(:progress, :log)
       # A peek that finds nothing must leave the previous drain's record alone
       # rather than replacing it with a walk that never happened.
       assert_equal "done", after[:progress][:phase]
@@ -422,7 +447,7 @@ class Hcb::OrganizationTransactionsTest < ActiveSupport::TestCase
   test "sync_state reports nothing cached before any drain has run" do
     client = FakeHcbClient.new(transactions: [])
     assert_equal(
-      { fetched_at: nil, count: nil, token: nil, reloading: false, draining: false, drain_kind: nil, progress: nil },
+      { fetched_at: nil, count: nil, token: nil, reloading: false, draining: false, drain_kind: nil, progress: nil, log: [] },
       Hcb::OrganizationTransactions.new(client, "org_1").sync_state
     )
   end
@@ -464,11 +489,13 @@ class Hcb::OrganizationTransactionsTest < ActiveSupport::TestCase
     assert_nil fresh.sync_state[:fetched_at]
   end
 
-  test "a claimed full reload stops every other path from draining the same history again" do
+  # --- one task per organization -----------------------------------------------
+
+  test "a claimed reload stops every other path from draining the same history again" do
     transactions = (1..3).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
     client = FakeHcbClient.new(transactions: transactions)
     service = Hcb::OrganizationTransactions.new(client, "org_1")
-    service.claim_full_reload!("stream-1")
+    assert service.start_task!(kind: :reload, requested_by: "Matthew", resume: false)
     service.purge!
 
     calls_before = client.transactions_calls
@@ -479,466 +506,329 @@ class Hcb::OrganizationTransactionsTest < ActiveSupport::TestCase
     # duplicate rate-limit spend the claim exists to prevent.
     assert_empty other.all
     assert_equal :reloading, other.sync_head!
-
-    first_page = other.fetch_page(stream_id: "bystander")
-    assert first_page[:reloading]
-    assert_empty first_page[:data]
-
-    # Mid-stream too: a reload claimed after someone started paging must not
-    # leave them walking the whole history alongside it.
-    mid_stream = other.fetch_page(stream_id: "bystander", after: "txn_3")
-    assert mid_stream[:reloading]
+    assert_nil other.start_task!(kind: :cold, requested_by: "someone else")
+    assert_equal other.progress.read[:task_id], other.ensure_loaded!(requested_by: "someone else", user_id: 1)[:task_id]
 
     assert_equal calls_before, client.transactions_calls
     assert other.sync_state[:reloading]
+    assert other.full_reload_running?
   end
 
-  test "a claimed full reload stops the background refresh being queued on top of it" do
+  test "a claimed task stops the background refresh being queued on top of it" do
     client = FakeHcbClient.new(transactions: [ { "id" => "txn_1", "date" => "2026-01-01", "amount_cents" => 1 } ], user_id: 7)
     service = Hcb::OrganizationTransactions.new(client, "org_1")
-    service.claim_full_reload!("stream-1")
+    service.start_task!(kind: :reload, requested_by: "Matthew", resume: false)
     service.purge!
 
     # A purged cache reads as maximally stale, so without the check this would
-    # queue a redrain on every request for the whole duration of the reload --
-    # each one publishing a fetched_at the reloading tab reads as its own drain
-    # having landed.
+    # queue a redrain on every request for the whole duration of the reload.
     assert_no_enqueued_jobs(only: WarmOrganizationTransactionsJob) do
       Hcb::OrganizationTransactions.new(client, "org_1").all
     end
   end
 
-  test "the tab holding the claim still streams its reload against the purged cache" do
-    transactions = (1..3).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
-    client = FakeHcbClient.new(transactions: transactions)
-    service = Hcb::OrganizationTransactions.new(client, "org_1")
-    service.claim_full_reload!("stream-1")
-    service.purge!
-
-    first = service.fetch_page(stream_id: "stream-1", limit: 1, reload: true)
-    assert_not first[:reloading]
-    assert_equal 1, first[:data].size
-
-    second = service.fetch_page(stream_id: "stream-1", after: first[:next_after], limit: 1, reload: true)
-    service.fetch_page(stream_id: "stream-1", after: second[:next_after], limit: 1, reload: true)
-
-    assert_equal transactions.map { |t| t["id"] }, service.all.map { |t| t["id"] }
-    assert_not service.sync_state[:reloading]
-  end
-
-  test "reload-mode pages re-walk history from HCB rather than answering from the warm cache" do
+  test "a reload task re-walks history from HCB and publishes only once its last page lands" do
     transactions = (1..3).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
     client = FakeHcbClient.new(transactions: transactions)
     service = Hcb::OrganizationTransactions.new(client, "org_1")
     service.all # cache and baseline both warm now
 
-    assert service.claim_full_reload!("stream-1")
+    task_id = service.start_task!(kind: :reload, requested_by: "Matthew", resume: false)
+    service.purge!
     calls_before = client.transactions_calls
 
-    first = service.fetch_page(stream_id: "stream-1", limit: 1, reload: true)
+    stamps = []
+    service.stub(:page, ->(after: nil, limit:) {
+      stamps << service.sync_state[:fetched_at]
+      client.transactions("org_1", after: after, limit: 1)
+    }) do
+      service.run_task!(task_id)
+    end
 
-    # The whole point of a full reload is not trusting what's cached, so the
-    # short-circuits an ordinary stream takes have to be skipped: one page's
-    # worth of rows, and a request actually made for them.
-    assert_equal 1, first[:data].size
-    assert first[:has_more]
-    assert_equal 1, client.transactions_calls - calls_before
-  end
-
-  test "a reload-mode stream publishes only once its last page lands" do
-    transactions = (1..3).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
-    client = FakeHcbClient.new(transactions: transactions)
-    service = Hcb::OrganizationTransactions.new(client, "org_1")
-    service.claim_full_reload!("stream-1")
-
-    first = service.fetch_page(stream_id: "stream-1", limit: 1, reload: true)
-    # A partial walk must not become the authoritative result -- a drain missing
-    # its older half is a wrong running balance for every row above it.
-    assert_nil service.sync_state[:fetched_at]
-
-    second = service.fetch_page(stream_id: "stream-1", after: first[:next_after], limit: 1, reload: true)
-    assert_nil service.sync_state[:fetched_at]
-
-    service.fetch_page(stream_id: "stream-1", after: second[:next_after], limit: 1, reload: true)
-
+    # The whole point of a full reload is not trusting what's cached: every
+    # page actually requested, and a partial walk never published -- a drain
+    # missing its older half is a wrong running balance for every row above it.
+    assert_equal 3, client.transactions_calls - calls_before
+    assert_equal [ nil, nil, nil ], stamps
     assert_equal 3, service.sync_state[:count]
     assert_equal transactions.map { |t| t["id"] }, service.all.map { |t| t["id"] }
     # Released on the way out, so the next reload can be claimed.
-    assert_nil service.full_reload_claim
+    assert_nil service.task_claim
+    assert_not service.full_reload_running?
   end
 
-  test "reload mode is only offered to the stream holding the claim" do
-    service = Hcb::OrganizationTransactions.new(FakeHcbClient.new(transactions: []), "org_1")
-
-    assert service.claim_full_reload!("stream-1")
-    assert service.full_reload_stream?("stream-1")
-    # Another tab asking for a full re-walk of its own would double the cost
-    # against a rate limit the whole organization shares.
-    assert_not service.full_reload_stream?("stream-2")
-    assert_not service.full_reload_stream?("")
-    # And nobody else can claim it while it's held.
-    assert_not service.claim_full_reload!("stream-2")
-  end
-
-  test "resume_stream! finishes an abandoned stream from the pages it had already buffered" do
-    transactions = (1..5).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
-    client = FakeHcbClient.new(transactions: transactions)
+  test "a second request attaches to the task already running instead of buying a second copy of it" do
+    client = FakeHcbClient.new(transactions: [ { "id" => "txn_1", "date" => "2026-01-01", "amount_cents" => 1 } ], user_id: 7)
     service = Hcb::OrganizationTransactions.new(client, "org_1")
-    service.claim_full_reload!("stream-1")
 
-    # Two pages in, then the tab goes away.
-    first = service.fetch_page(stream_id: "stream-1", limit: 2, reload: true)
-    service.fetch_page(stream_id: "stream-1", after: first[:next_after], limit: 2, reload: true)
-    assert_nil service.sync_state[:fetched_at]
-
+    first = service.ensure_loaded!(requested_by: "a", user_id: 7)
     calls_before = client.transactions_calls
-    outcome = travel(Hcb::OrganizationTransactions::STREAM_HEARTBEAT_TIMEOUT + 1.second) do
-      service.resume_stream!("stream-1")
-    end
-
-    assert_equal :resumed, outcome
-    # Picked up where the stream stopped rather than starting the walk again:
-    # one more request finishes the remaining transaction.
-    assert_equal 1, client.transactions_calls - calls_before
-    assert_equal transactions.map { |t| t["id"] }, service.all.map { |t| t["id"] }
-    assert_nil service.full_reload_claim
-  end
-
-  test "resume_stream! leaves a stream that is still being driven alone" do
-    transactions = (1..5).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
-    client = FakeHcbClient.new(transactions: transactions)
-    service = Hcb::OrganizationTransactions.new(client, "org_1")
-    service.claim_full_reload!("stream-1")
-    service.fetch_page(stream_id: "stream-1", limit: 2, reload: true)
-
-    calls_before = client.transactions_calls
-
-    # Draining alongside a live stream would spend the shared rate limit twice
-    # over on the same history.
-    assert_equal :running, service.resume_stream!("stream-1")
-    assert_equal calls_before, client.transactions_calls
-    assert_nil service.sync_state[:fetched_at]
-  end
-
-  test "resume_stream! is a no-op once the stream has published and released" do
-    client = FakeHcbClient.new(transactions: [ { "id" => "txn_1", "date" => "2026-01-01", "amount_cents" => 1 } ])
-    service = Hcb::OrganizationTransactions.new(client, "org_1")
-    service.claim_full_reload!("stream-1")
-    service.fetch_page(stream_id: "stream-1", reload: true)
-
-    calls_before = client.transactions_calls
-
-    assert_equal :done, service.resume_stream!("stream-1")
-    assert_equal calls_before, client.transactions_calls
-  end
-
-  test "a second stream waits for the walk already running instead of buying a second copy of it" do
-    client = FakeHcbClient.new(
-      transactions: [
-        { "id" => "txn_2", "date" => "2026-01-02", "memo" => "B", "amount_cents" => 200 },
-        { "id" => "txn_1", "date" => "2026-01-01", "memo" => "A", "amount_cents" => 100 }
-      ]
-    )
-    service = Hcb::OrganizationTransactions.new(client, "org_1")
-
-    a_first = service.fetch_page(stream_id: "a", limit: 1)
-    assert_equal [ "txn_2" ], a_first[:data].map { |t| t["id"] }
 
     # Two tabs opening the same cold organization used to each walk the whole
     # history, against a rate limit they share with everybody else.
-    calls_before = client.transactions_calls
-    b_first = service.fetch_page(stream_id: "b", limit: 1)
-    assert b_first[:waiting]
-    assert_empty b_first[:data]
+    assert_no_enqueued_jobs(only: WarmOrganizationTransactionsJob) do
+      second = Hcb::OrganizationTransactions.new(client, "org_1").ensure_loaded!(requested_by: "b", user_id: 8)
+      assert_equal first[:task_id], second[:task_id]
+    end
     assert_equal calls_before, client.transactions_calls
-
-    a_second = service.fetch_page(stream_id: "a", after: a_first[:next_after], limit: 1)
-    assert_not a_second[:has_more]
-
-    assert_equal [ "txn_2", "txn_1" ], service.all.map { |t| t["id"] }
   end
 
-  test "a stream that lost its claim mid-walk stops rather than publishing over the owner" do
+  test "ensure_loaded! is a no-op for a warm organization" do
+    client = FakeHcbClient.new(transactions: [ { "id" => "txn_1", "date" => "2026-01-01", "amount_cents" => 1 } ], user_id: 7)
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+    service.all
+
+    assert_no_enqueued_jobs(only: WarmOrganizationTransactionsJob) do
+      assert_nil service.ensure_loaded!(requested_by: "a", user_id: 7)
+    end
+    assert_nil service.task_claim
+  end
+
+  test "a task whose claim has moved on stops rather than publishing over the new owner" do
     transactions = (1..4).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
     client = FakeHcbClient.new(transactions: transactions)
     service = Hcb::OrganizationTransactions.new(client, "org_1")
+    task_id = service.start_task!(kind: :cold, requested_by: "a")
 
-    first = service.fetch_page(stream_id: "a", limit: 1)
-    assert first[:has_more]
+    # After the first page, another task takes the claim (having judged this
+    # one dead).
+    fetched = 0
+    service.stub(:page, ->(after: nil, limit:) {
+      fetched += 1
+      Rails.cache.write(service.send(:task_claim_key), { task_id: "takeover", kind: :cold }) if fetched == 1
+      client.transactions("org_1", after: after, limit: 1)
+    }) do
+      assert_equal :superseded, service.run_task!(task_id)
+    end
 
-    # The fallback job takes the walk over after the tab driving it goes quiet.
-    service.release_stream!
-    service.claim_stream!("takeover", kind: :cold)
-
-    calls_before = client.transactions_calls
-    orphaned = service.fetch_page(stream_id: "a", after: first[:next_after], limit: 1)
-
-    assert orphaned[:waiting]
-    assert_empty orphaned[:data]
-    assert_equal calls_before, client.transactions_calls
+    assert_equal 1, fetched, "it must stop at the next claim check, not walk on"
     assert_nil service.sync_state[:fetched_at]
+    # The claim is the other task's to release.
+    assert_equal "takeover", service.task_claim[:task_id]
   end
 
-  # --- a walk that outlives the tab driving it -------------------------------
+  # --- a task that dies -------------------------------------------------------
 
-  test "an abandoned cold stream is finished from the pages it had already buffered" do
+  test "a stalled task is taken over and finished from the pages it had already fetched" do
     transactions = (1..6).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
-    client = FakeHcbClient.new(transactions: transactions)
+    client = FakeHcbClient.new(transactions: transactions, user_id: 7)
     service = Hcb::OrganizationTransactions.new(client, "org_1")
 
-    # A tab opens a cold organization, streams two pages, then goes away.
-    first = service.fetch_page(stream_id: "s1", limit: 2)
-    service.fetch_page(stream_id: "s1", after: first[:next_after], limit: 2)
+    # A task fetches two pages, then its worker dies: nothing advances it.
+    task_id = service.start_task!(kind: :cold, requested_by: "a")
+    Rails.cache.write(service.send(:page_key, 1), transactions[0, 2], expires_in: Hcb::OrganizationTransactions::TASK_PAGE_TTL)
+    Rails.cache.write(service.send(:page_key, 2), transactions[2, 2], expires_in: Hcb::OrganizationTransactions::TASK_PAGE_TTL)
+    service.progress.advance!(pages_done: 2, transactions_done: 4, total_count: 6)
     assert_nil service.sync_state[:fetched_at], "a partial walk must never become the authoritative result"
 
-    travel(Hcb::OrganizationTransactions::STREAM_HEARTBEAT_TIMEOUT + 1.second) do
-      assert_equal :resumed, service.resume_stream!("s1")
-    end
+    travel(Hcb::DrainProgress::STALE_AFTER + 1.second) do
+      assert service.stale_task?
+      assert_not service.drain_running?
+      assert service.sync_state[:progress][:stalled]
 
-    assert_equal transactions.map { |t| t["id"] }, service.all.map { |t| t["id"] }
-    assert_nil service.stream_claim
-  end
+      # Nobody is advancing the claim. Refusing outright would leave the
+      # organization unreadable until the claim expired; starting over would
+      # re-buy the pages already fetched.
+      taken = Hcb::OrganizationTransactions.new(client, "org_1").ensure_loaded!(requested_by: "b", user_id: 7)
+      assert_not_equal task_id, taken[:task_id]
+      assert_equal 2, service.task_claim[:resume_pages]
 
-  test "a resumed walk picks up from the buffer rather than re-walking what the tab already fetched" do
-    transactions = (1..6).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
-    client = FakeHcbClient.new(transactions: transactions)
-    service = Hcb::OrganizationTransactions.new(client, "org_1")
-
-    first = service.fetch_page(stream_id: "s1", limit: 2)
-    service.fetch_page(stream_id: "s1", after: first[:next_after], limit: 2)
-
-    # Four of the six are already buffered, so finishing should cost the pages
-    # covering the remaining two -- not a fresh walk of all six.
-    calls_before = client.transactions_calls
-    travel(Hcb::OrganizationTransactions::STREAM_HEARTBEAT_TIMEOUT + 1.second) do
-      service.resume_stream!("s1")
-    end
-
-    assert_operator client.transactions_calls - calls_before, :<=, 2
-  end
-
-  test "abandon_stream! lets the walk be taken over without waiting out the heartbeat" do
-    transactions = (1..6).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
-    service = Hcb::OrganizationTransactions.new(FakeHcbClient.new(transactions: transactions), "org_1")
-
-    service.fetch_page(stream_id: "s1", limit: 2)
-    # Without the handoff the claim is fresh, so nothing may touch it yet.
-    assert_equal :running, service.resume_stream!("s1")
-
-    assert service.abandon_stream!("s1")
-    assert_equal :resumed, service.resume_stream!("s1")
-    assert_equal transactions.map { |t| t["id"] }, service.all.map { |t| t["id"] }
-  end
-
-  test "abandon_stream! ignores a beacon from a stream that no longer holds the claim" do
-    service = Hcb::OrganizationTransactions.new(FakeHcbClient.new(transactions: []), "org_1")
-
-    service.claim_stream!("owner", kind: :cold)
-    assert_not service.abandon_stream!("someone-else")
-    assert_equal :running, service.resume_stream!("owner")
-  end
-
-  test "a page restored from the bfcache after handing off does not walk beside the job" do
-    transactions = (1..6).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
-    client = FakeHcbClient.new(transactions: transactions)
-    service = Hcb::OrganizationTransactions.new(client, "org_1")
-
-    first = service.fetch_page(stream_id: "s1", limit: 2)
-    service.abandon_stream!("s1")
-
-    # The tab comes back and resumes its fetch loop where it left off.
-    calls_before = client.transactions_calls
-    resumed = service.fetch_page(stream_id: "s1", after: first[:next_after], limit: 2)
-
-    assert resumed[:waiting], "a stream that has handed off must not keep fetching"
-    assert_equal calls_before, client.transactions_calls
-  end
-
-  test "a cold stream does not make the organization look mid-reload" do
-    transactions = (1..6).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
-    service = Hcb::OrganizationTransactions.new(FakeHcbClient.new(transactions: transactions), "org_1")
-
-    service.fetch_page(stream_id: "s1", limit: 2)
-
-    # #all returns [] for a reload because the caches have been purged; a cold
-    # walk purges nothing, so the read paths must not treat it the same way.
-    assert_not service.full_reload_running?
-    assert service.drain_running?
-    assert_not service.sync_state[:reloading]
-    assert_equal :cold, service.sync_state[:drain_kind]
-  end
-
-  test "a walk taken over by a job owns the claim, so the tab it was taken from cannot walk alongside it" do
-    transactions = (1..6).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
-    client = FakeHcbClient.new(transactions: transactions)
-    service = Hcb::OrganizationTransactions.new(client, "org_1")
-
-    first = service.fetch_page(stream_id: "s1", limit: 2)
-    service.abandon_stream!("s1")
-
-    # Mid-takeover: the job holds the claim, and the tab that comes back must be
-    # told to wait rather than fetch the same pages a second time.
-    claim_during_takeover = nil
-    service.stub(:drain, ->(**_kwargs) {
-      claim_during_takeover = Hcb::OrganizationTransactions.new(client, "org_1").stream_claim
-      []
-    }) do
-      service.resume_stream!("s1")
-    end
-
-    assert_not_equal "s1", claim_during_takeover[:stream_id]
-    assert_equal :cold, claim_during_takeover[:kind]
-  end
-
-  test "sync_head! waits for a walk already building the history instead of queueing a second one" do
-    transactions = (1..250).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
-    client = FakeHcbClient.new(transactions: transactions)
-    service = Hcb::OrganizationTransactions.new(client, "org_1")
-
-    # A cold walk is under way, so there is nothing cached to peek against.
-    service.fetch_page(stream_id: "s1", limit: 100)
-
-    calls_before = client.transactions_calls
-    assert_equal :draining, Hcb::OrganizationTransactions.new(client, "org_1").sync_head!
-    assert_equal calls_before, client.transactions_calls, "the peek itself must not be spent either"
-  end
-
-  test "no background redrain is queued on top of a walk that is already running" do
-    user = User.create!(hcb_user_id: "usr_1", access_token: "a", refresh_token: "b", token_expires_at: 1.hour.from_now)
-    transactions = (1..250).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
-    client = FakeHcbClient.new(transactions: transactions, user_id: user.id)
-    service = Hcb::OrganizationTransactions.new(client, "org_1")
-
-    service.all
-    travel(Hcb::OrganizationTransactions::BACKGROUND_REFRESH_INTERVAL + 1.second) do
-      service.claim_stream!("someone-elses-walk", kind: :cold)
-      assert_no_enqueued_jobs do
-        Hcb::OrganizationTransactions.new(client, "org_1").all
+      calls_before = client.transactions_calls
+      service.stub(:page, ->(after: nil, limit:) { client.transactions("org_1", after: after, limit: 2) }) do
+        service.run_task!(taken[:task_id])
       end
+      assert_equal 1, client.transactions_calls - calls_before, "it should finish the walk, not restart it"
+    end
+
+    assert_equal transactions.map { |t| t["id"] }, service.all.map { |t| t["id"] }
+    assert_nil service.task_claim
+  end
+
+  test "a live task is left alone" do
+    client = FakeHcbClient.new(transactions: [ { "id" => "txn_1", "date" => "2026-01-01", "amount_cents" => 1 } ])
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+    service.start_task!(kind: :cold, requested_by: "a")
+
+    assert_not service.stale_task?
+    assert_nil service.start_task!(kind: :cold, requested_by: "b")
+    assert_equal :draining, service.sync_head!
+  end
+
+  test "a reload never resumes the pages of the task it replaces" do
+    transactions = (1..6).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
+    client = FakeHcbClient.new(transactions: transactions)
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+    service.start_task!(kind: :cold, requested_by: "a")
+    Rails.cache.write(service.send(:page_key, 1), transactions[0, 2], expires_in: Hcb::OrganizationTransactions::TASK_PAGE_TTL)
+    service.progress.advance!(pages_done: 1, transactions_done: 2)
+
+    travel(Hcb::DrainProgress::STALE_AFTER + 1.second) do
+      assert service.start_task!(kind: :reload, requested_by: "b", resume: false)
+      # Re-reading those pages is the whole point of a reload.
+      assert_equal 0, service.task_claim[:resume_pages]
     end
   end
 
-  # --- closing the tab and coming back ---------------------------------------
-
-  test "reopening an organization continues the abandoned walk instead of starting a second one" do
+  test "an inline read finishes a stalled task rather than being stranded by its claim" do
     transactions = (1..500).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
     client = FakeHcbClient.new(transactions: transactions)
     service = Hcb::OrganizationTransactions.new(client, "org_1")
-
-    # A tab opens a cold organization, gets two pages in, and is closed.
-    first = service.fetch_page(stream_id: "tab-a", limit: 100)
-    service.fetch_page(stream_id: "tab-a", after: first[:next_after], limit: 100)
-    service.abandon_stream!("tab-a")
-    spent_by_first_tab = client.transactions_calls
-
-    # The organization is opened again.
-    reopened = Hcb::OrganizationTransactions.new(client, "org_1")
-    resumed = reopened.fetch_page(stream_id: "tab-b", limit: 100)
-
-    # It picks the walk up rather than starting it: the 200 rows the first tab
-    # had already fetched come straight back, and only the pages that were
-    # actually still outstanding are bought from HCB.
-    assert resumed[:resumed]
-    assert_equal 300, resumed[:data].size, "the rows the closed tab had already fetched should come back with the first page"
-    assert_equal transactions.first(300).map { |t| t["id"] }, resumed[:data].map { |t| t["id"] }
-    assert_equal 1, client.transactions_calls - spent_by_first_tab
-
-    # And finishing it costs only what is left, not another 500 rows.
-    after = resumed
-    after = reopened.fetch_page(stream_id: "tab-b", after: after[:next_after], limit: 100) while after[:has_more]
-
-    assert_equal 5, client.transactions_calls, "the history should have been walked once between the two tabs, not twice"
-    assert_equal transactions.map { |t| t["id"] }, reopened.all.map { |t| t["id"] }
-  end
-
-  test "the authoritative read never walks the history beside a walk already claimed" do
-    transactions = (1..500).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
-    client = FakeHcbClient.new(transactions: transactions)
-    service = Hcb::OrganizationTransactions.new(client, "org_1")
-
-    first = service.fetch_page(stream_id: "tab-a", limit: 100)
-    service.fetch_page(stream_id: "tab-a", after: first[:next_after], limit: 100)
+    service.start_task!(kind: :cold, requested_by: "a")
+    Rails.cache.write(service.send(:page_key, 1), transactions[0, 100], expires_in: Hcb::OrganizationTransactions::TASK_PAGE_TTL)
+    Rails.cache.write(service.send(:page_key, 2), transactions[100, 100], expires_in: Hcb::OrganizationTransactions::TASK_PAGE_TTL)
+    service.progress.advance!(pages_done: 2, transactions_done: 200, total_count: 500)
     spent = client.transactions_calls
 
-    # /api/transactions -> OrganizationLedger#effective_cutoff -> #all, while
-    # the walk above is still live. This is the path that used to start a
-    # second full drain inline.
+    travel(Hcb::DrainProgress::STALE_AFTER + 1.second) do
+      # /api/v1 -> OrganizationLedger -> #all, with nobody advancing the claim
+      # and no job having got to it.
+      result = Hcb::OrganizationTransactions.new(client, "org_1").all
+
+      assert_equal transactions.map { |t| t["id"] }, result.map { |t| t["id"] }
+      assert_equal 3, client.transactions_calls - spent, "it should finish the walk, not restart it"
+    end
+  end
+
+  test "the authoritative read never walks the history beside a live task" do
+    transactions = (1..500).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
+    client = FakeHcbClient.new(transactions: transactions)
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+    service.start_task!(kind: :cold, requested_by: "a")
+    spent = client.transactions_calls
+
     assert_empty Hcb::OrganizationTransactions.new(client, "org_1").all
     assert_equal spent, client.transactions_calls
   end
 
-  test "an authoritative read finishes an abandoned walk rather than being stranded by its claim" do
-    transactions = (1..500).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
-    client = FakeHcbClient.new(transactions: transactions)
+  # --- failure ----------------------------------------------------------------
+
+  test "a failed task records why, releases the claim, and is not restarted by the next poll" do
+    client = FakeHcbClient.new(transactions: [ { "id" => "txn_1", "date" => "2026-01-01", "amount_cents" => 1 } ], user_id: 7)
+    client.define_singleton_method(:transactions) { |*, **| raise "HCB is down" }
     service = Hcb::OrganizationTransactions.new(client, "org_1")
 
-    first = service.fetch_page(stream_id: "tab-a", limit: 100)
-    service.fetch_page(stream_id: "tab-a", after: first[:next_after], limit: 100)
-    service.abandon_stream!("tab-a")
-    spent = client.transactions_calls
+    task = service.ensure_loaded!(requested_by: "a", user_id: 7)
+    assert_raises(RuntimeError) { service.run_task!(task[:task_id]) }
 
-    # Nothing is advancing the claim, and no job got to it. Refusing outright
-    # would leave the organization unreadable until the claim expired.
-    result = Hcb::OrganizationTransactions.new(client, "org_1").all
+    record = service.progress.read
+    assert_equal "failed", record[:phase]
+    assert_equal "HCB is down", record[:error]
+    assert_nil service.task_claim
+    assert_includes service.activity.read.map { |e| e[:text] }.join("\n"), "HCB is down"
 
-    assert_equal transactions.map { |t| t["id"] }, result.map { |t| t["id"] }
-    assert_equal 3, client.transactions_calls - spent, "it should finish the walk, not restart it"
+    # Every open tab polls while it waits; each poll restarting the task would
+    # be a tight loop of failures against the shared rate limit.
+    assert_no_enqueued_jobs(only: WarmOrganizationTransactionsJob) do
+      assert_equal task[:task_id], service.ensure_loaded!(requested_by: "b", user_id: 7)[:task_id]
+    end
+
+    # An explicit retry is different.
+    assert_enqueued_with(job: WarmOrganizationTransactionsJob) do
+      assert_not_equal task[:task_id], service.ensure_loaded!(requested_by: "b", user_id: 7, force: true)[:task_id]
+    end
   end
 
-  # --- progress ---------------------------------------------------------------
-
-  test "a streamed walk reports how far it has got while it is still running" do
+  test "a retry after a failure carries on from the pages the failed walk fetched" do
     transactions = (1..6).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
-    service = Hcb::OrganizationTransactions.new(FakeHcbClient.new(transactions: transactions), "org_1")
+    client = FakeHcbClient.new(transactions: transactions, user_id: 7)
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
 
-    first = service.fetch_page(stream_id: "s1", limit: 2)
-    mid = service.sync_state[:progress]
+    task_id = service.start_task!(kind: :cold, requested_by: "a")
+    fetched = 0
+    service.stub(:page, ->(after: nil, limit:) {
+      fetched += 1
+      raise "HCB is down" if fetched == 3
+      client.transactions("org_1", after: after, limit: 2)
+    }) do
+      assert_raises(RuntimeError) { service.run_task!(task_id) }
+    end
 
-    assert_equal "cold", mid[:kind]
-    assert_equal "browser", mid[:source]
-    assert_equal 2, mid[:transactions_done]
-    assert_equal 6, mid[:total_count]
-    assert_not mid[:stalled]
-
-    service.fetch_page(stream_id: "s1", after: first[:next_after], limit: 2)
-    assert_equal 4, service.sync_state[:progress][:transactions_done]
+    retried = service.ensure_loaded!(requested_by: "a", user_id: 7, force: true)
+    assert_equal 2, service.task_claim[:resume_pages]
+    calls_before = client.transactions_calls
+    service.stub(:page, ->(after: nil, limit:) { client.transactions("org_1", after: after, limit: 2) }) do
+      service.run_task!(retried[:task_id])
+    end
+    assert_equal 1, client.transactions_calls - calls_before
+    assert_equal transactions.map { |t| t["id"] }, service.all.map { |t| t["id"] }
   end
 
-  test "progress reports done once the result is published" do
+  # --- progress and the log ---------------------------------------------------
+
+  test "a task reports how far it has got while it is still running" do
+    transactions = (1..6).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
+    client = FakeHcbClient.new(transactions: transactions)
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+    task_id = service.start_task!(kind: :cold, requested_by: "Matthew")
+
+    seen = []
+    service.stub(:page, ->(after: nil, limit:) {
+      seen << service.sync_state[:progress].slice(:kind, :source, :requested_by, :transactions_done, :total_count, :stalled, :running)
+      client.transactions("org_1", after: after, limit: 2)
+    }) do
+      service.run_task!(task_id)
+    end
+
+    assert_equal(
+      { kind: "cold", source: "background", requested_by: "Matthew", transactions_done: 2, total_count: 6, stalled: false, running: true },
+      seen[1]
+    )
+    assert_equal 4, seen[2][:transactions_done]
+  end
+
+  test "progress reports done once the result is published, and keeps saying so for a later viewer" do
     service = Hcb::OrganizationTransactions.new(
       FakeHcbClient.new(transactions: [ { "id" => "txn_1", "date" => "2026-01-01", "amount_cents" => 1 } ]), "org_1"
     )
-    service.fetch_page(stream_id: "s1", limit: 2)
+    service.run_task!(service.start_task!(kind: :cold, requested_by: "a"))
 
     progress = service.sync_state[:progress]
     assert_equal "done", progress[:phase]
     assert_equal 1, progress[:transactions_done]
-  end
+    assert_not progress[:running]
 
-  test "progress reports a walk nobody is advancing any more as stalled" do
-    transactions = (1..6).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
-    service = Hcb::OrganizationTransactions.new(FakeHcbClient.new(transactions: transactions), "org_1")
-
-    service.fetch_page(stream_id: "s1", limit: 2)
-    assert_not service.sync_state[:progress][:stalled]
-
-    travel(Hcb::DrainProgress::STALE_AFTER + 1.second) do
-      assert service.sync_state[:progress][:stalled],
-        "a drain nothing has advanced for longer than the stale window is not still running"
+    travel(Hcb::DrainProgress::TTL + 1.minute) do
+      assert_equal "done", service.sync_state[:progress][:phase], "the record of a finished task outlives a running one's TTL"
     end
   end
 
-  test "a background job that takes a walk over reports itself as the one driving it" do
-    transactions = (1..6).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
-    service = Hcb::OrganizationTransactions.new(FakeHcbClient.new(transactions: transactions), "org_1")
+  test "the activity log records the walk for every viewer, and answers from a seq onwards" do
+    transactions = (1..3).map { |n| { "id" => "txn_#{n}", "date" => "2026-01-01", "amount_cents" => n } }.reverse
+    client = FakeHcbClient.new(transactions: transactions)
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
 
-    service.fetch_page(stream_id: "s1", limit: 2)
-    assert_equal "browser", service.sync_state[:progress][:source]
+    task_id = service.start_task!(kind: :cold, requested_by: "Matthew")
+    started = service.activity.read
+    assert_equal 1, started.size
+    assert_match(/Matthew started loading/, started.first[:text])
 
-    service.abandon_stream!("s1")
-    service.resume_stream!("s1")
+    service.stub(:page, ->(after: nil, limit:) { client.transactions("org_1", after: after, limit: 2) }) do
+      service.run_task!(task_id)
+    end
 
-    assert_equal "background", service.sync_state[:progress][:source]
+    # A different instance -- another tab, another process -- reads the same
+    # account, and only what it hasn't seen when it says where it got to.
+    later = Hcb::OrganizationTransactions.new(client, "org_1").activity.read(after: started.last[:seq])
+    assert_equal [ "hcb", "hcb", "info", "done" ], later.map { |e| e[:kind] }
+    assert_match(/page 1: 2 transactions/, later[0][:text])
+    assert_match(/page 2: 1 transactions/, later[1][:text])
+    assert_match(/3 transactions published/, later.last[:text])
+    assert later.all? { |e| e[:task_id] == task_id }
+    assert_equal later, service.sync_state(log_after: started.last[:seq])[:log]
+  end
+
+  test "sync_head! writes what it found to the log" do
+    client = FakeHcbClient.new(transactions: [ { "id" => "txn_1", "date" => "2026-01-01", "amount_cents" => 100 } ])
+    service = Hcb::OrganizationTransactions.new(client, "org_1")
+    service.all
+
+    assert_equal :fresh, service.sync_head!(requested_by: "Matthew")
+    client.add_transactions([ { "id" => "txn_2", "date" => "2026-01-02", "amount_cents" => 200 } ])
+    assert_equal :synced, service.sync_head!(requested_by: "Matthew")
+
+    texts = service.activity.read.map { |e| e[:text] }
+    assert_match(/Matthew checked HCB.*already up to date/, texts[-2])
+    assert_match(/Matthew checked HCB.*1 new transaction, spliced/, texts[-1])
   end
 
   test "sync_state names the drain its caches belong to, and a new drain renames it" do

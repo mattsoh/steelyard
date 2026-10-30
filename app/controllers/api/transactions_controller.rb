@@ -14,6 +14,13 @@ class Api::TransactionsController < ApplicationController
   # objects just to re-generate the identical JSON is work this endpoint --
   # the heaviest read in the app -- does not have to do.
   def index
+    # A cold organization is answered with "loading" and a background task
+    # building it, not by walking HCB inside this request -- see
+    # Hcb::OrganizationTransactions#ensure_loaded!. The client waits on that
+    # task (polling #sync_status) and asks again.
+    Hcb::OrganizationTransactions.new(hcb_client, organization_id)
+      .ensure_loaded!(requested_by: requester_name, user_id: current_user.id)
+
     ledger = OrganizationLedger.new(hcb_client, organization_id)
     cutoff = ledger.effective_cutoff
     ids = (ledger.after_cutoff_ids + referenced_by_visible_matches(ledger)).uniq
@@ -37,8 +44,9 @@ class Api::TransactionsController < ApplicationController
     )
   end
 
-  # One HCB page at a time, so the frontend can render rows as they arrive
-  # instead of blocking on the full drain #index needs for cutoff filtering.
+  # The rows, warm, or the pages the task building them has fetched so far --
+  # see StreamedTransactionPages. What the frontend renders while waiting on
+  # the full drain #index needs for cutoff filtering.
   def page
     render_streamed_page
   end
@@ -47,22 +55,25 @@ class Api::TransactionsController < ApplicationController
   # Hcb::OrganizationTransactions#sync_head!. Costs one HCB request, and in the
   # common case (a handful of new transactions) that same request also *fixes*
   # the cache, so the caller can just re-read #index. When more changed than a
-  # single page can account for, the full redrain is handed to a background job
-  # rather than paid for inline: the caller already has usable data on screen
-  # and can keep working with it, polling #sync_status to learn when the fresh
-  # drain lands.
+  # single page can account for, the full redrain becomes a background task
+  # rather than being paid for inline: the caller already has usable data on
+  # screen and can keep working with it, polling #sync_status to learn when the
+  # fresh drain lands.
   #
   # Deliberately available to readers as well as matchers: it only refreshes
   # cached HCB data everyone on the page is already allowed to see.
   def refresh
     transactions = Hcb::OrganizationTransactions.new(hcb_client, organization_id)
-    status = transactions.sync_head!
-    # :reloading means a full reload is already rebuilding this organization's
-    # history from scratch, which subsumes anything this check would ask for --
-    # so nothing is queued behind it and the caller just waits for that drain.
-    WarmOrganizationTransactionsJob.perform_later(current_user.id, organization_id) if status == :deep
+    status = transactions.sync_head!(requested_by: requester_name)
+    # :reloading / :draining mean a task is already rebuilding this
+    # organization's history, which subsumes anything this check would ask for
+    # -- so nothing is queued behind it and the caller just waits for that one.
+    if status == :deep
+      task_id = transactions.start_task!(kind: transactions.natural_kind, requested_by: requester_name)
+      WarmOrganizationTransactionsJob.perform_later(current_user.id, organization_id, task_id: task_id) if task_id
+    end
 
-    render json: { status: status, hcb: hcb_client.stats, **transactions.sync_state }
+    render json: { status: status, hcb: hcb_client.stats, **transactions.sync_state(log_after: params[:log_after].presence) }
   end
 
   # Re-checks ONE transaction against HCB, for the detail modal. #refresh only
@@ -85,7 +96,7 @@ class Api::TransactionsController < ApplicationController
       return render json: { error: "A full reload of this organization is running — try again once it finishes." }, status: :conflict
     end
 
-    result = transactions.refresh_one!(params[:id])
+    result = transactions.refresh_one!(params[:id], requested_by: requester_name)
     return render json: { error: "That transaction isn't part of this organization's history." }, status: :not_found if result.nil?
 
     render json: {
@@ -103,84 +114,46 @@ class Api::TransactionsController < ApplicationController
   # transactions of the org's *entire* history, against a rate limit shared by
   # everyone using this app, which is why the UI warns first.
   #
-  # Claimed under a lock, so two people asking at once still only costs one
-  # drain. The winner is handed the stream_id that claim is recorded against and
-  # streams the walk itself through #page's reload mode, rendering pages as they
-  # land instead of watching a cleared screen for minutes. The loser gets no
-  # stream and falls back to polling #sync_status for the drain that's already
-  # running -- which is the same result, just without the running commentary.
-  #
-  # A background job is queued behind the stream rather than instead of it: if
-  # the tab driving the walk goes away mid-history, WarmOrganizationTransactions
-  # Job finishes it from the pages already buffered, so an abandoned reload
-  # costs time rather than the whole walk.
+  # Claimed as a task, so two people asking at once still only costs one
+  # walk: the first starts it and everyone -- the person who asked included --
+  # watches the same task through #page and #sync_status, rendering its pages
+  # as they land. Closing the tab changes nothing; the walk is a job's.
   def reload
     transactions = Hcb::OrganizationTransactions.new(hcb_client, organization_id)
-    stream_id = SecureRandom.uuid
-    claimed = transactions.claim_full_reload!(stream_id)
+    task_id = transactions.start_task!(kind: :reload, requested_by: requester_name, resume: false)
 
-    if claimed
+    if task_id
       # Dropped before the walk starts, not overwritten at the end of it: a
       # reload is a clean slate, and until this runs every other request is
       # still being answered from the drain it's replacing -- including the
       # baseline, which the next ordinary redrain would splice the old rows
       # back on from. See Hcb::OrganizationTransactions#purge!.
       transactions.purge!
-      WarmOrganizationTransactionsJob
-        .set(wait: WarmOrganizationTransactionsJob::FALLBACK_DELAY)
-        .perform_later(current_user.id, organization_id, full: true, stream_id: stream_id)
+      WarmOrganizationTransactionsJob.perform_later(current_user.id, organization_id, task_id: task_id)
     end
 
     render json: {
-      status: claimed ? "started" : "already_running",
-      stream_id: claimed ? stream_id : nil,
-      **transactions.sync_state
+      status: task_id ? "started" : "already_running",
+      task_id: task_id,
+      **transactions.sync_state(log_after: params[:log_after].presence)
     }
   end
 
-  # Progress poll for whatever drain is currently running, and the one request
+  # Progress poll for whatever task is currently running, and the one request
   # a warm page load makes. Reads local cache only -- never HCB -- so polling it
   # every few seconds can't eat into the org-shared rate limit
   # Hcb::OrganizationTransactions exists to protect.
   #
-  # It answers two questions at once, which is why the client asks it before
+  # It answers three questions at once, which is why the client asks it before
   # anything else. `token` names the drain the caches currently hold, so a
   # browser holding rows from that same drain can render them immediately and
-  # make no further requests at all. `progress` says how far along a drain in
-  # flight has got, so a page that has nothing cached can show the real walk
-  # -- pages done, transactions so far, who is driving it -- instead of a
-  # spinner that looks the same whether the drain is moving or dead.
+  # make no further requests at all. `progress` says how far along the task in
+  # flight has got -- or what the last one was, for a tab opened after it
+  # finished. `log` is the activity log the task (and the checks around it)
+  # wrote, from `log_after` onwards, so a tab shows the same history whether it
+  # was open for the walk or not.
   def sync_status
-    render json: Hcb::OrganizationTransactions.new(hcb_client, organization_id).sync_state
-  end
-
-  # "This tab is going away; don't wait for my heartbeat to lapse."
-  #
-  # Sent with navigator.sendBeacon from pagehide (see streaming.js), which is
-  # the only thing a closing page can reliably get out. Without it, a drain
-  # driven by a tab that closes stalls for the whole STREAM_HEARTBEAT_TIMEOUT
-  # before the fallback job is willing to take it over -- ninety seconds in
-  # which anybody else looking at the organization sees a walk that has visibly
-  # stopped moving and no way to tell it is never coming back.
-  #
-  # Idempotent, and safe to lose: everything it does, the heartbeat timeout
-  # would have done anyway, just later. So it answers :accepted without caring
-  # whether the claim was still this stream's to give up -- a beacon has no way
-  # to read a response, and a stream that already finished has nothing to hand
-  # over.
-  def handoff
-    transactions = Hcb::OrganizationTransactions.new(hcb_client, organization_id)
-    stream_id = params[:stream_id].to_s
-
-    if transactions.abandon_stream!(stream_id)
-      # No wait: the tab has said it is gone, so the delay that exists to avoid
-      # racing a live stream has nothing left to avoid.
-      WarmOrganizationTransactionsJob.perform_later(
-        current_user.id, organization_id, full: true, stream_id: stream_id
-      )
-    end
-
-    head :accepted
+    render json: Hcb::OrganizationTransactions.new(hcb_client, organization_id).sync_state(log_after: params[:log_after].presence)
   end
 
   private
