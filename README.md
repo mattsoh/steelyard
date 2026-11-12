@@ -9,7 +9,7 @@ Favicon made by [Candy](https://github.com/codingkatty)!
 
 ## Local setup
 
-1. Ruby 3.4.9 (see `.ruby-version`), Postgres running locally.
+1. Ruby 4.0.9 (see `.ruby-version`), Postgres running locally.
 2. `bundle install`
 3. `bin/rails db:create db:migrate`
 4. Register an OAuth application at <https://hcb.hackclub.com/api/v4/oauth/applications> with
