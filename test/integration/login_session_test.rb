@@ -37,6 +37,65 @@ class LoginSessionTest < ActionDispatch::IntegrationTest
     assert_redirected_to "/oauth/authorize?client_id=unregistered"
   end
 
+  # An auditor is HCB's read-only admin: `admin` is false for them, and they're
+  # let in on the strength of `auditor` alone.
+  test "an auditor who isn't an admin can log in" do
+    auditor = User.new(hcb_user_id: "usr_4", name: "Ari", email: "ari@example.com")
+
+    sign_in_via_hcb!(auditor, admin: false, auditor: true)
+
+    assert_redirected_to organizations_path
+    assert_equal User.find_by!(hcb_user_id: "usr_4").id, session[:user_id]
+  end
+
+  # Steelyard is for HCB admins and auditors only, and the login callback is the
+  # one place that's enforced -- so anyone else has to come out of it with
+  # nothing: no session, no user row, no HCB tokens on file.
+  test "a non-admin is turned away without an account being created" do
+    newcomer = User.new(hcb_user_id: "usr_2", name: "Sam", email: "sam@example.com")
+
+    assert_no_difference -> { User.count } do
+      sign_in_via_hcb!(newcomer, admin: false)
+    end
+
+    assert_response :forbidden
+    assert_includes response.body, "HCB admins"
+    assert_nil session[:user_id]
+
+    get organizations_path
+    assert_redirected_to root_path
+  end
+
+  # Someone who had access and then lost admin on HCB: logging in again must
+  # not refresh the HCB tokens on file, and must not leave them holding the
+  # session they walked in with.
+  test "a former admin can't log back in, and loses the session they had" do
+    sign_in_via_hcb!(@user)
+    assert_equal @user.id, session[:user_id]
+    @user.update!(access_token: "stale")
+
+    sign_in_via_hcb!(@user, admin: false)
+
+    assert_response :forbidden
+    assert_nil session[:user_id]
+    assert_equal "stale", @user.reload.access_token
+  end
+
+  # HCB's payload is the only thing vouching for the visitor, so anything short
+  # of an explicit `true` -- the keys missing entirely, say -- is a no.
+  test "an identity with no admin or auditor flag is turned away" do
+    ENV["HCB_OAUTH_REDIRECT_URI"] ||= "http://www.example.com/auth/hcb/callback"
+    identity = { "id" => "usr_3", "email" => "pat@example.com", "name" => "Pat" }
+
+    Hcb.stub(:oauth_client, FakeHcbOauth.new(identity)) do
+      get login_path
+      get hcb_callback_path, params: { code: "hcb-code", state: session[:oauth_state] }
+    end
+
+    assert_response :forbidden
+    assert_nil User.find_by(hcb_user_id: "usr_3")
+  end
+
   test "logging out clears the session and the stored HCB tokens" do
     sign_in_via_hcb!(@user)
     assert_equal @user.id, session[:user_id]

@@ -36,11 +36,18 @@ end
 # over a shortcut: what the callback does on the way back -- returning the user
 # to a parked request, for one -- is part of what the flows under test depend on.
 class ActionDispatch::IntegrationTest
-  def sign_in_via_hcb!(user)
+  # `admin` and `auditor` are what HCB reports for the person logging in.
+  # Steelyard only lets HCB admins and auditors in, so an admin is the default;
+  # pass `admin: false` to walk the same login as someone who gets turned away,
+  # or add `auditor: true` to come in as an auditor instead.
+  def sign_in_via_hcb!(user, admin: true, auditor: false)
     # dotenv supplies this locally; a bare checkout (or CI) has no .env.
     ENV["HCB_OAUTH_REDIRECT_URI"] ||= "http://www.example.com/auth/hcb/callback"
 
-    identity = { "id" => user.hcb_user_id, "email" => user.email, "name" => user.name }
+    identity = {
+      "id" => user.hcb_user_id, "email" => user.email, "name" => user.name,
+      "admin" => admin, "auditor" => auditor
+    }
     Hcb.stub(:oauth_client, FakeHcbOauth.new(identity)) do
       get login_path
       get hcb_callback_path, params: { code: "hcb-code", state: session[:oauth_state] }

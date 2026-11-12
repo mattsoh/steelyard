@@ -30,6 +30,19 @@ class SessionsController < ApplicationController
 
     identity = JSON.parse(token.get("/api/v4/user").body)
 
+    # Steelyard is for HCB staff only: admins and auditors (HCB's read-only
+    # admins). Checked before anything is written, so someone turned away here
+    # leaves no user row and no stored HCB tokens behind -- and since API tokens
+    # and MCP connections are only ever minted from a logged-in session, this
+    # one gate covers those surfaces too.
+    #
+    # Both flags are HCB's own (`User#admin?`, `User#auditor?`) and have to be
+    # strictly `true`; a payload missing them is a no.
+    unless identity["admin"] == true || identity["auditor"] == true
+      reset_session
+      return render plain: "Steelyard is only available to HCB admins and auditors.", status: :forbidden
+    end
+
     user = User.find_or_initialize_by(hcb_user_id: identity["id"])
     user.update!(
       access_token: token.token,
